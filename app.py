@@ -4,8 +4,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="未來小股神技術分析儀表板", layout="wide")
-st.title("🔍 未來小股神技術分析儀表板")
+st.set_page_config(page_title="全面技術分析儀表板", layout="wide")
+st.title("🔍 全面技術分析儀表板")
 
 st.markdown("### 📥 請輸入股票代號")
 col_input1, col_input2 = st.columns([2, 1])
