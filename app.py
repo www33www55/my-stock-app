@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -7,10 +8,15 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="全能技術分析健檢儀表板", layout="wide")
 st.title("🔍 全能技術分析健檢儀表板")
 
-# 側邊欄輸入
-st.sidebar.header("搜尋設定")
-ticker = st.sidebar.text_input("輸入股票代號 (例如: 2330.TW 或 AAPL)", "2330.TW")
-period = st.sidebar.selectbox("觀看範圍", ["6mo", "1y", "2y"], index=1)
+# --- 把輸入框直接搬到網頁正中央 ---
+st.markdown("### 📥 請在下方輸入你想健檢的股票代號")
+col_input1, col_input2 = st.columns([2, 1])
+with col_input1:
+    ticker = st.text_input("股票代號 (台股請加 .TW，例如: 2330.TW；美股直接輸入，例如: NVDA)", "2330.TW")
+with col_input2:
+    period = st.selectbox("觀看範圍", ["6mo", "1y", "2y"], index=1)
+
+st.markdown("---") # 分隔線
 
 @st.cache_data
 def load_data(symbol, p):
@@ -24,19 +30,16 @@ try:
     
     if not df.empty:
         # --- 1. 計算所有技術指標 ---
-        # 均線 MA
         df['MA5'] = df['Close'].rolling(window=5).mean()
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA60'] = df['Close'].rolling(window=60).mean()
         
-        # MACD
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
         df['DIF'] = exp1 - exp2
         df['MACD_Signal'] = df['DIF'].ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = df['DIF'] - df['MACD_Signal']
         
-        # KD
         low_min = df['Low'].rolling(window=9).min()
         high_max = df['High'].rolling(window=9).max()
         rsv = 100 * ((df['Close'] - low_min) / (high_max - low_min))
@@ -59,7 +62,6 @@ try:
         score = 0
         
         with col1:
-            # 檢視 1: 均線多頭排列 (5MA > 20MA > 60MA)
             if latest['MA5'] > latest['MA20'] and latest['MA20'] > latest['MA60']:
                 st.success("🟢 均線排列：多頭排列")
                 score += 25
@@ -70,7 +72,6 @@ try:
                 st.error("🔴 均線排列：空頭排列防守")
                 
         with col2:
-            # 檢視 2: MACD
             if latest['DIF'] > latest['MACD_Signal']:
                 st.success("🟢 MACD：波段多頭波段")
                 score += 25
@@ -78,7 +79,6 @@ try:
                 st.error("🔴 MACD：空頭修正波段")
                 
         with col3:
-            # 檢視 3: KD 狀態
             if latest['K'] > latest['D']:
                 if latest['K'] > 80:
                     st.warning("🟡 KD：高檔鈍化強勢")
@@ -89,7 +89,6 @@ try:
                 st.error("🔴 KD：死亡交叉弱勢")
                 
         with col4:
-            # 檢視 4: 股價與季線關係 (長期趨勢)
             if latest['Close'] > latest['MA60']:
                 st.success("🟢 季線守護：站穩生命線之上")
                 score += 25
@@ -105,24 +104,21 @@ try:
         else:
             st.markdown("💡 **診斷結論：空頭趨勢明顯，目前風險極高，不建議入場。**")
 
-        # --- 3. 繪製專業綜合圖表 (K線 + 均線 + MACD + KD) ---
+        # --- 3. 繪製專業綜合圖表 ---
         st.subheader("📊 完整技術圖表")
         
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
                             vertical_spacing=0.05, 
                             row_width=[0.2, 0.2, 0.6])
         
-        # Row 1: K線 + 均線
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='orange', width=1), name='5MA'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='magenta', width=1.5), name='20MA(月線)'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], line=dict(color='cyan', width=2), name='60MA(季線)'), row=1, col=1)
         
-        # Row 2: KD 指標
         fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='red', width=1.5), name='K值'), row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='blue', width=1.5), name='D值'), row=2, col=1)
         
-        # Row 3: MACD 柱狀圖
         colors = ['red' if val >= 0 else 'green' for val in df['MACD_Hist']]
         fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors, name='MACD柱狀圖'), row=3, col=1)
 
