@@ -172,7 +172,8 @@ if st.sidebar.button("🚀 開始回測計算", use_container_width=True):
             elif val == "失敗": return "background-color: #f8d7da; color: #721c24;"
             return "background-color: #fff3cd; color: #856404;"
             
-        st.dataframe(result_df.style.applymap(color_result, subset=["回測結果"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(trades))
+
 
 else:
     st.info("💡 請在左側設定好您想回測的股票代號與停損利條件，並點擊『開始回測計算』！")
