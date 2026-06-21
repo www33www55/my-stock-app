@@ -2,63 +2,64 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="操盤手系統", layout="wide")
-st.title("📈 操盤手實戰系統 (除錯重構版)")
+st.set_page_config(page_title="全能操盤儀表板", layout="wide")
+st.title("🚀 全能操盤儀表板 (極致優化版)")
 
-ticker = st.text_input("輸入股票代號 (例如: 2330.TW)", "2330.TW")
-df = yf.download(ticker, period="1y")
+# --- 輸入框 ---
+ticker = st.text_input("輸入股票代號 (如 2330.TW / AAPL)", "2330.TW")
+period = st.selectbox("時間範圍", ["6mo", "1y", "2y"], index=1)
 
-# --- 安全檢查：確保資料載入成功 ---
-if not df.empty and len(df) > 60:
-    # 確保 columns 是單層結構
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+@st.cache_data
+def load_data(symbol, p):
+    try:
+        df = yf.download(symbol, period=p)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        return df
+    except: return pd.DataFrame()
 
-    # 1. 計算均線
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA60'] = df['Close'].rolling(window=60).mean()
+df = load_data(ticker, period)
+
+if not df.empty and len(df) > 10:
+    # --- 指標計算 ---
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['BIAS20'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
     
-    # 2. 獲取當前數據
-    curr_close = float(df['Close'].iloc[-1])
-    curr_ma20 = float(df['MA20'].iloc[-1])
-    curr_ma60 = float(df['MA60'].iloc[-1])
+    # KD & 背離判定 (簡化版)
+    low_min = df['Low'].rolling(9).min()
+    high_max = df['High'].rolling(9).max()
+    rsv = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+    df['K'] = rsv.ewm(alpha=1/3, adjust=False).mean()
+    df['D'] = df['K'].ewm(alpha=1/3, adjust=False).mean()
     
-    # 3. N字突破判定 (現價 > 過去20天最高)
-    prev_high = float(df['High'].rolling(window=20).max().shift(1).iloc[-1])
-    is_n_break = curr_close > prev_high
-    
-    # 4. 爆量判定
-    curr_vol = float(df['Volume'].iloc[-1])
-    avg_vol = float(df['Volume'].rolling(window=20).mean().iloc[-1])
-    is_volume_up = curr_vol > (avg_vol * 1.5)
+    # 背離偵測
+    df['Bear_Div'] = (df['Close'] > df['Close'].shift(1)) & (df['K'] < df['K'].shift(1)) & (df['K'] > 70)
+    df['Bull_Div'] = (df['Close'] < df['Close'].shift(1)) & (df['K'] > df['K'].shift(1)) & (df['K'] < 30)
 
-    # 5. 計分系統 (權重設定)
-    score = 0
-    if curr_close > curr_ma20: score += 10    # 均線
-    score += 15                              # MACD (保留權重)
-    score += 10                              # KD (保留權重)
-    if curr_close > curr_ma60: score += 10    # 季線
-    if is_n_break: score += 20               # N字突破
-    if is_volume_up: score += 20             # 爆量
-    score += 15                              # 法人 (保留權重)
-
-    # --- 顯示區 ---
-    st.subheader(f"🎯 綜合勝率評分：{score}/100")
+    # --- 視覺排版 ---
+    latest = df.iloc[-1]
     
+    # 燈號區
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("均線多頭", "YES" if curr_close > curr_ma20 else "NO")
-    c2.metric("N字突破", "YES" if is_n_break else "NO")
-    c3.metric("爆量訊號", "YES" if is_volume_up else "NO")
-    c4.metric("目前總分", f"{score}分")
+    with c1: st.metric("乖離率", f"{latest['BIAS20']:.1f}%")
+    with c2: st.metric("K值", f"{latest['K']:.1f}")
+    with c3: st.metric("D值", f"{latest['D']:.1f}")
+    with c4: st.write("背離狀態", "🚨 高檔!" if latest['Bear_Div'] else "🔥 低檔!" if latest['Bull_Div'] else "✅ 正常")
 
-    # 目標價邏輯
-    last_low = float(df['Low'].rolling(window=10).min().iloc[-1])
-    st.markdown(f"---")
-    st.write(f"🛑 **停損建議**: {last_low * 0.98:.2f} | 🎯 **目標價**: {curr_close * 1.15:.2f}")
+    # --- 繪圖 ---
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.5, 0.25, 0.25])
+    
+    # K線 + 成交量 (改為共用區塊更清晰)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
+    
+    # KD
+    fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K值', line=dict(color='red')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D值', line=dict(color='blue')), row=2, col=1)
+    
+    # 背離標示 (直接畫在圖上)
+    fig.add_trace(go.Scatter(x=df[df['Bear_Div']].index, y=df[df['Bear_Div']]['Close'], mode='markers', name='高檔背離', marker=dict(size=10, color='red', symbol='x')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df[df['Bull_Div']].index, y=df[df['Bull_Div']]['Close'], mode='markers', name='低檔背離', marker=dict(size=10, color='green', symbol='circle')), row=1, col=1)
 
-    # 圖表
-    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+    fig.update_layout(height=800, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
-else:
-    st.error("目前抓不到資料，請檢查代號是否正確，或稍候再試。")
