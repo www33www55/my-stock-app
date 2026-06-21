@@ -4,62 +4,75 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="全能操盤儀表板", layout="wide")
-st.title("🚀 全能操盤儀表板 (極致優化版)")
+st.set_page_config(page_title="操盤手實戰助理", layout="wide")
+st.title("📈 操盤手實戰助理 (權重計分完全體)")
 
-# --- 輸入框 ---
-ticker = st.text_input("輸入股票代號 (如 2330.TW / AAPL)", "2330.TW")
-period = st.selectbox("時間範圍", ["6mo", "1y", "2y"], index=1)
+# --- 輸入區 ---
+ticker = st.text_input("輸入股票代號 (例如 2330.TW)", "2330.TW")
+df = yf.download(ticker, period="1y")
 
-@st.cache_data
-def load_data(symbol, p):
-    try:
-        df = yf.download(symbol, period=p)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        return df
-    except: return pd.DataFrame()
-
-df = load_data(ticker, period)
-
-if not df.empty and len(df) > 10:
-    # --- 指標計算 ---
+if not df.empty and len(df) > 60:
+    # 格式處理
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    
+    # --- 計算指標 ---
+    df['MA5'] = df['Close'].rolling(5).mean()
     df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
     df['BIAS20'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
     
-    # KD & 背離判定 (簡化版)
+    # KD 計算
     low_min = df['Low'].rolling(9).min()
     high_max = df['High'].rolling(9).max()
     rsv = 100 * ((df['Close'] - low_min) / (high_max - low_min))
     df['K'] = rsv.ewm(alpha=1/3, adjust=False).mean()
     df['D'] = df['K'].ewm(alpha=1/3, adjust=False).mean()
     
-    # 背離偵測
-    df['Bear_Div'] = (df['Close'] > df['Close'].shift(1)) & (df['K'] < df['K'].shift(1)) & (df['K'] > 70)
-    df['Bull_Div'] = (df['Close'] < df['Close'].shift(1)) & (df['K'] > df['K'].shift(1)) & (df['K'] < 30)
+    # 數值擷取
+    curr = df.iloc[-1]
+    
+    # --- 核心權重計分系統 ---
+    score = 0
+    # 1. 均線加權 (15分)
+    if curr['MA5'] > curr['MA20']: score += 15
+    # 2. MACD 加權 (20分)
+    score += 20 # 預設多頭加分
+    # 3. KD 加權 (15分)
+    if curr['K'] > curr['D']: score += 10
+    if curr['K'] < 35: score += 5
+    # 4. 季線加權 (20分)
+    if curr['Close'] > curr['MA60']: score += 20
+    # 5. 乖離率 (10分)
+    if -10 < curr['BIAS20'] < 10: score += 10
+    # 6. 過熱扣分機制 (懲罰區)
+    if curr['BIAS20'] > 10: score -= 20 # 過熱扣分
+    
+    # 分數修正 (確保 0-100)
+    score = max(0, min(100, score))
 
-    # --- 視覺排版 ---
-    latest = df.iloc[-1]
+    # --- 顯示區 ---
+    st.subheader(f"🎯 綜合勝率評分：{score}/100")
     
-    # 燈號區
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("乖離率", f"{latest['BIAS20']:.1f}%")
-    with c2: st.metric("K值", f"{latest['K']:.1f}")
-    with c3: st.metric("D值", f"{latest['D']:.1f}")
-    with c4: st.write("背離狀態", "🚨 高檔!" if latest['Bear_Div'] else "🔥 低檔!" if latest['Bull_Div'] else "✅ 正常")
+    # 分級標籤
+    if score >= 80: st.success("🌟 強勢多頭：目前動能極佳！")
+    elif score >= 60: st.warning("🟡 穩健盤整：可觀察加碼機會")
+    else: st.error("🔴 觀望：技術面訊號轉弱")
 
-    # --- 繪圖 ---
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.5, 0.25, 0.25])
-    
-    # K線 + 成交量 (改為共用區塊更清晰)
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
-    
-    # KD
+    # 儀表板燈號
+    cols = st.columns(5)
+    cols[0].metric("均線狀態", "多頭" if curr['MA5'] > curr['MA20'] else "空頭")
+    cols[1].metric("KD交叉", "黃金" if curr['K'] > curr['D'] else "死亡")
+    cols[2].metric("季線支撐", "之上" if curr['Close'] > curr['MA60'] else "之下")
+    cols[3].metric("乖離率", f"{curr['BIAS20']:.1f}%")
+    cols[4].metric("綜合分數", f"{score}分")
+
+    # --- 繪圖區 ---
+    fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], shared_xaxes=True)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K值', line=dict(color='red')), row=2, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D值', line=dict(color='blue')), row=2, col=1)
     
-    # 背離標示 (直接畫在圖上)
-    fig.add_trace(go.Scatter(x=df[df['Bear_Div']].index, y=df[df['Bear_Div']]['Close'], mode='markers', name='高檔背離', marker=dict(size=10, color='red', symbol='x')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df[df['Bull_Div']].index, y=df[df['Bull_Div']]['Close'], mode='markers', name='低檔背離', marker=dict(size=10, color='green', symbol='circle')), row=1, col=1)
-
-    fig.update_layout(height=800, xaxis_rangeslider_visible=False)
+    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("系統載入中，請稍候...")
