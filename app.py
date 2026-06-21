@@ -90,7 +90,7 @@ if df is not None and not df.empty and len(df) > 10:
     df['HIGH_WIN_SIGNAL'] = df['MACD_Bullish'] & df['KD_Cross']
     df['SUPER_WIN_SIGNAL'] = df['MACD_Super_Good'] & df['KD_Cross'] & df['KD_Super_Good']
 
-    # --- 4. 今日最新狀態評分大健檢 (變成 6 個燈號) ---
+    # --- 4. 今日最新狀態評分大健檢 ---
     latest = df.iloc[-1]
     score = 0
     is_overheated = (latest['RSI5'] > 78) or (latest['BIAS20'] > 12) or kd_bear_div
@@ -130,14 +130,17 @@ if df is not None and not df.empty and len(df) > 10:
             st.error("🔴 季線：跌破生命線")
             
     with col5:
+        # 把乖離 % 數值完美補上文字顯示！
         if latest['BIAS20'] > 12:
-            st.error(f"🚨 乖離：離月線過遠")
+            st.error(f"🚨 乖離：過高 ({latest['BIAS20']:.1f}%)")
+        elif latest['BIAS20'] < -10:
+            st.success(f"🟢 乖離：跌深 ({latest['BIAS20']:.1f}%)")
+            score += 20
         else:
-            st.success("🟢 乖離：安全範圍")
+            st.success(f"🟢 乖離：安全 ({latest['BIAS20']:.1f}%)")
             score += 20
 
     with col6:
-        # 將背離直接獨立成一個大燈號！
         if kd_bear_div:
             st.error("🚨 背離：高檔背離(危險)")
         elif kd_bull_div:
