@@ -2,14 +2,15 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="高勝率雙指標選股機", layout="wide")
-st.title("🚦 KD + MACD 雙重多頭高勝率選股機")
+st.set_page_config(page_title="全能技術分析健檢儀表板", layout="wide")
+st.title("🔍 全能技術分析健檢儀表板")
 
 # 側邊欄輸入
-st.sidebar.header("設定參數")
+st.sidebar.header("搜尋設定")
 ticker = st.sidebar.text_input("輸入股票代號 (例如: 2330.TW 或 AAPL)", "2330.TW")
-period = st.sidebar.selectbox("資料範圍", ["1y", "2y", "5y"], index=0)
+period = st.sidebar.selectbox("觀看範圍", ["6mo", "1y", "2y"], index=1)
 
 @st.cache_data
 def load_data(symbol, p):
@@ -22,18 +23,23 @@ try:
     df = load_data(ticker, period)
     
     if not df.empty:
-        # --- 1. 計算 MACD 多頭趨勢 ---
+        # --- 1. 計算所有技術指標 ---
+        # 均線 MA
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA60'] = df['Close'].rolling(window=60).mean()
+        
+        # MACD
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
         df['DIF'] = exp1 - exp2
         df['MACD_Signal'] = df['DIF'].ewm(span=9, adjust=False).mean()
-        df['MACD_Bullish'] = df['DIF'] > df['MACD_Signal']  # 多頭趨勢定義：DIF > Signal
-
-        # --- 2. 計算 KD 黃金交叉 ---
+        df['MACD_Hist'] = df['DIF'] - df['MACD_Signal']
+        
+        # KD
         low_min = df['Low'].rolling(window=9).min()
         high_max = df['High'].rolling(window=9).max()
         rsv = 100 * ((df['Close'] - low_min) / (high_max - low_min))
-        
         k_list, d_list = [], []
         current_k, current_d = 50.0, 50.0
         for r in rsv.fillna(50):
@@ -41,60 +47,87 @@ try:
             current_d = (2/3) * current_d + (1/3) * current_k
             k_list.append(current_k)
             d_list.append(current_d)
-            
         df['K'] = k_list
         df['D'] = d_list
-        
-        # KD 黃金交叉：今天 K>D 且 昨天 K<=D
-        df['KD_Cross'] = (df['K'] > df['D']) & (df['K'].shift(1) <= df['D'].shift(1))
 
-        # --- 3. 核心：高勝率買進訊號 (MACD是多頭波段 + 今天剛好KD黃金交叉) ---
-        df['HIGH_WIN_SIGNAL'] = df['MACD_Bullish'] & df['KD_Cross']
-
-        # --- 4. 判斷今天最新狀態 ---
+        # --- 2. 今日最新狀態評分大健檢 ---
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
         
-        st.subheader("📢 今日即時雷達")
-        col1, col2, col3 = st.columns(3)
+        st.subheader("📋 今日四大技術指標綜合健檢")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        score = 0
         
         with col1:
-            if latest['MACD_Bullish']:
-                st.success("📈 MACD 趨勢：波段多頭安全區")
+            # 檢視 1: 均線多頭排列 (5MA > 20MA > 60MA)
+            if latest['MA5'] > latest['MA20'] and latest['MA20'] > latest['MA60']:
+                st.success("🟢 均線排列：多頭排列")
+                score += 25
+            elif latest['Close'] > latest['MA20']:
+                st.warning("🟡 均線排列：站上月線盤整")
+                score += 15
             else:
-                st.error("📉 MACD 趨勢：空頭修正防守區")
+                st.error("🔴 均線排列：空頭排列防守")
                 
         with col2:
-            if latest['K'] > latest['D']:
-                st.warning(f"⚡ KD 狀態：K值({latest['K']:.1f}) > D值({latest['D']:.1f})")
+            # 檢視 2: MACD
+            if latest['DIF'] > latest['MACD_Signal']:
+                st.success("🟢 MACD：波段多頭波段")
+                score += 25
             else:
-                st.info(f"❄️ KD 狀態：K值({latest['K']:.1f}) < D值({latest['D']:.1f})")
+                st.error("🔴 MACD：空頭修正波段")
                 
         with col3:
-            if latest['HIGH_WIN_SIGNAL']:
-                st.markdown("### 🚦 訊號：🔥 **雙重確認！強烈進場訊號**")
-            elif latest['MACD_Bullish'] and not latest['KD_Cross']:
-                st.markdown("### 🚦 訊號：🍏 **多頭持股續抱，等待低吸**")
+            # 檢視 3: KD 狀態
+            if latest['K'] > latest['D']:
+                if latest['K'] > 80:
+                    st.warning("🟡 KD：高檔鈍化強勢")
+                else:
+                    st.success("🟢 KD：黃金交叉多頭")
+                score += 25
             else:
-                st.markdown("### 🚦 訊號：❌ **目前不符合高勝率買點**")
+                st.error("🔴 KD：死亡交叉弱勢")
+                
+        with col4:
+            # 檢視 4: 股價與季線關係 (長期趨勢)
+            if latest['Close'] > latest['MA60']:
+                st.success("🟢 季線守護：站穩生命線之上")
+                score += 25
+            else:
+                st.error("🔴 季線守護：跌破生命線")
 
-        # --- 5. 繪製精簡 K 線圖 ---
-        st.subheader("📊 歷史高勝率訊號點驗證")
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"))
+        # 顯示綜合評分
+        st.markdown(f"### 🎯 技術面綜合多頭評分：` {score} / 100 ` 分")
+        if score >= 75:
+            st.markdown("💡 **診斷結論：趨勢極度強勢，順風局！符合高勝率進場/續抱條件。**")
+        elif score >= 50:
+            st.markdown("💡 **診斷結論：多空拉鋸盤整中，建議分批加碼或觀望。**")
+        else:
+            st.markdown("💡 **診斷結論：空頭趨勢明顯，目前風險極高，不建議入場。**")
+
+        # --- 3. 繪製專業綜合圖表 (K線 + 均線 + MACD + KD) ---
+        st.subheader("📊 完整技術圖表")
         
-        # 標示出歷史上雙重符合的亮點
-        signals = df[df['HIGH_WIN_SIGNAL']]
-        fig.add_trace(go.Scatter(x=signals.index, y=signals['Low'] * 0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='lime'), name='🔥高勝率買點'))
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                            vertical_spacing=0.05, 
+                            row_width=[0.2, 0.2, 0.6])
         
-        fig.update_layout(xaxis_rangeslider_visible=False, height=450, margin=dict(l=10, r=10, t=10, b=10))
+        # Row 1: K線 + 均線
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], line=dict(color='orange', width=1), name='5MA'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], line=dict(color='magenta', width=1.5), name='20MA(月線)'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], line=dict(color='cyan', width=2), name='60MA(季線)'), row=1, col=1)
+        
+        # Row 2: KD 指標
+        fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='red', width=1.5), name='K值'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='blue', width=1.5), name='D值'), row=2, col=1)
+        
+        # Row 3: MACD 柱狀圖
+        colors = ['red' if val >= 0 else 'green' for val in df['MACD_Hist']]
+        fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors, name='MACD柱狀圖'), row=3, col=1)
+
+        fig.update_layout(xaxis_rangeslider_visible=False, height=650, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
-
-        # --- 6. 歷史紀錄表格 ---
-        st.subheader("📋 歷史進場點清單 (對照上方綠色三角形)")
-        show_df = signals[['Close', 'K', 'D', 'DIF', 'MACD_Signal']].copy()
-        show_df.index = show_df.index.strftime('%Y-%m-%d')
-        st.dataframe(show_df, use_container_width=True)
 
     else:
         st.error("找不到該股票資料，請檢查代號是否輸入正確。")
