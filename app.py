@@ -12,7 +12,7 @@ st.title("🔍 全能技術分析健檢儀表板")
 st.markdown("### 📥 請在下方輸入你想健檢的股票代號")
 col_input1, col_input2 = st.columns([2, 1])
 with col_input1:
-    ticker = st.text_input("股票代號 (台股請加 .TW，例如: 2330.TW；美股直接輸入，例如: NVDA)", "2330.TW")
+    ticker = st.text_input("股票代號 (台股請加 .TW,上櫃.TWO，例如: 2330.TW；美股直接輸入，例如: NVDA)", "2330.TW")
 with col_input2:
     period = st.selectbox("觀看範圍", ["6mo", "1y", "2y"], index=1)
 
