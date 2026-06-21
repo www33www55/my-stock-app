@@ -141,9 +141,10 @@ if st.sidebar.button("🚀 開始回測計算", use_container_width=True):
         
         # 主 K 線圖
         fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-            name="K線", label_to_display="Close"
-        ), row=1, col=1)
+    x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+    name="K線"
+), row=1, col=1)
+
         
         # 加上 20MA
         fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20MA', line=dict(color='orange', width=1.5)), row=1, col=1)
