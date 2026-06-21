@@ -172,7 +172,9 @@ if st.sidebar.button("🚀 開始回測計算", use_container_width=True):
             elif val == "失敗": return "background-color: #f8d7da; color: #721c24;"
             return "background-color: #fff3cd; color: #856404;"
             
-        st.dataframe(pd.DataFrame(trades))
+        if 'df' in locals() and 'BUY_SIGNAL' in df:
+    st.dataframe(df[df['BUY_SIGNAL']].copy())
+
 
 
 else:
