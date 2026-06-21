@@ -140,25 +140,25 @@ if st.sidebar.button("🚀 開始回測計算", use_container_width=True):
                             vertical_spacing=0.1, row_width=[0.3, 0.7])
         
         # 主 K 線圖
-        fig.add_trace(gr.Candlestick(
+        fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
             name="K線", label_to_display="Close"
         ), row=1, col=1)
         
         # 加上 20MA
-        fig.add_trace(gr.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20MA', line=dict(color='orange', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], mode='lines', name='20MA', line=dict(color='orange', width=1.5)), row=1, col=1)
         
         # 標註買進訊號
         signal_dates = df[df["BUY_SIGNAL"]].index
         signal_prices = df[df["BUY_SIGNAL"]]["Close"]
-        fig.add_trace(gr.Scatter(
+        fig.add_trace(go.Scatter(
             x=signal_dates, y=signal_prices, mode='markers', name='★買進訊號',
             marker=dict(color='magenta', size=12, symbol='triangle-up', line=dict(color='black', width=1))
         ), row=1, col=1)
         
         # 副圖：MACD
-        fig.add_trace(gr.Scatter(x=df.index, y=df['DIF'], mode='lines', name='DIF', line=dict(color='blue', width=1)), row=2, col=1)
-        fig.add_trace(gr.Scatter(x=df.index, y=df['MACD_SIGNAL'], mode='lines', name='MACD_Signal', line=dict(color='red', width=1)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['DIF'], mode='lines', name='DIF', line=dict(color='blue', width=1)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_SIGNAL'], mode='lines', name='MACD_Signal', line=dict(color='red', width=1)), row=2, col=1)
         
         fig.update_layout(height=550, xaxis_rangeslider_visible=False, title_text=f"{stock} 訊號點位對照圖")
         st.plotly_chart(fig, use_container_width=True)
