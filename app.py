@@ -5,9 +5,9 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="未來小股神技術分析", layout="wide")
+st.set_page_config(page_title="技術分析", layout="wide")
 
-st.title("🚀 未來小股神｜台股技術分析 App")
+st.title("🚀 ｜台股技術分析 App")
 st.write("白話版：突破、MACD、KD背離、RSI、量能、目標價一次看懂")
 
 # =====================
