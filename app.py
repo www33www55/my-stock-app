@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 st.set_page_config(page_title="技術分析", layout="wide")
 
 st.title("🚀 ｜台股技術分析 App")
-st.write("白話版：突破、MACD、KD背離、RSI、量能、目標價一次看懂")
+st.write("突破、MACD、KD背離、RSI、量能、目標價一次看懂")
 
 # =====================
 # 工具函數
@@ -233,7 +233,7 @@ def analyze(df):
 # 介面
 # =====================
 
-symbol_input = st.text_input("請輸入股票代號，例如 2303、2409、6271", "2303")
+symbol_input = st.text_input("請輸入股票代號，例如 台股:2330、上櫃:7828.TWO)
 symbol = fix_symbol(symbol_input)
 
 if st.button("開始分析"):
