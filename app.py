@@ -16,7 +16,7 @@ with col_input1:
 with col_input2:
     period = st.selectbox("觀看範圍", ["6mo", "1y", "2y"], index=1)
 
-st.markdown("---")
+st.markdown("---"
 
 
 @st.cache_data(ttl=3600)
@@ -31,7 +31,7 @@ def load_data(symbol, p):
         return df
 
     except Exception:
-        return pd.DataFrame()
+        return
 
 
 df = load_data(ticker, period)
