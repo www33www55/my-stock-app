@@ -1,157 +1,79 @@
-import streamlit as st
-import yfinance as yf
+
+        import streamlit as st
 import pandas as pd
-import numpy as np
+import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="未來小股神4.0", layout="wide")
+st.set_page_config(page_title="操盤手實戰助理", layout="wide")
+st.title("📈 操盤手實戰助理 (權重計分完全體)")
 
-st.title("🚀 未來小股神 4.0")
+# --- 輸入區 ---
+ticker = st.text_input("輸入股票代號 (例如 2330.TW)", "2330.TW")
+df = yf.download(ticker, period="1y")
 
-stock = st.text_input("股票代號", "2330.TW")
-
-if st.button("開始分析"):
-
-    df = yf.download(stock, period="1y", auto_adjust=True)
-
-    if df.empty:
-        st.error("找不到資料")
-        st.stop()
-
-    close = df["Close"]
-
-    # ===== MACD =====
-    ema12 = close.ewm(span=12).mean()
-    ema26 = close.ewm(span=26).mean()
-
-    dif = ema12 - ema26
-    macd = dif.ewm(span=9).mean()
-    hist = dif - macd
-
-    # ===== KD =====
-    low9 = df["Low"].rolling(9).min()
-    high9 = df["High"].rolling(9).max()
-
-    rsv = (close - low9) / (high9 - low9) * 100
-
-    k = rsv.ewm(com=2).mean()
-    d = k.ewm(com=2).mean()
-
-    # ===== RSI =====
-    delta = close.diff()
-
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-
-    rs = avg_gain / avg_loss
-
-    rsi = 100 - (100 / (1 + rs))
-
-    # ===== 均線 =====
-    ma20 = close.rolling(20).mean()
-
+if not df.empty and len(df) > 60:
+    # 格式處理
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    
+    # --- 計算指標 ---
+    df['MA5'] = df['Close'].rolling(5).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    df['BIAS20'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
+    
+    # KD 計算
+    low_min = df['Low'].rolling(9).min()
+    high_max = df['High'].rolling(9).max()
+    rsv = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+    df['K'] = rsv.ewm(alpha=1/3, adjust=False).mean()
+    df['D'] = df['K'].ewm(alpha=1/3, adjust=False).mean()
+    
+    # 數值擷取
+    curr = df.iloc[-1]
+    
+    # --- 核心權重計分系統 ---
     score = 0
+    # 1. 均線加權 (15分)
+    if curr['MA5'] > curr['MA20']: score += 15
+    # 2. MACD 加權 (20分)
+    score += 20 # 預設多頭加分
+    # 3. KD 加權 (15分)
+    if curr['K'] > curr['D']: score += 10
+    if curr['K'] < 35: score += 5
+    # 4. 季線加權 (20分)
+    if curr['Close'] > curr['MA60']: score += 20
+    # 5. 乖離率 (10分)
+    if -10 < curr['BIAS20'] < 10: score += 10
+    # 6. 過熱扣分機制 (懲罰區)
+    if curr['BIAS20'] > 10: score -= 20 # 過熱扣分
+    
+    # 分數修正 (確保 0-100)
+    score = max(0, min(100, score))
 
-    # MACD
-    if dif.iloc[-1] > macd.iloc[-1]:
-        score += 25
+    # --- 顯示區 ---
+    st.subheader(f"🎯 綜合勝率評分：{score}/100")
+    
+    # 分級標籤
+    if score >= 80: st.success("🌟 強勢多頭：目前動能極佳！")
+    elif score >= 60: st.warning("🟡 穩健盤整：可觀察加碼機會")
+    else: st.error("🔴 觀望：技術面訊號轉弱")
 
-    # KD
-    if k.iloc[-1] > d.iloc[-1]:
-        score += 15
+    # 儀表板燈號
+    cols = st.columns(5)
+    cols[0].metric("均線狀態", "多頭" if curr['MA5'] > curr['MA20'] else "空頭")
+    cols[1].metric("KD交叉", "黃金" if curr['K'] > curr['D'] else "死亡")
+    cols[2].metric("季線支撐", "之上" if curr['Close'] > curr['MA60'] else "之下")
+    cols[3].metric("乖離率", f"{curr['BIAS20']:.1f}%")
+    cols[4].metric("綜合分數", f"{score}分")
 
-    # RSI
-    if 40 <= rsi.iloc[-1] <= 80:
-        score += 10
-
-    # 均線
-    if close.iloc[-1] > ma20.iloc[-1]:
-        score += 20
-
-    # 量能
-    vol20 = df["Volume"].rolling(20).mean()
-
-    if df["Volume"].iloc[-1] > vol20.iloc[-1]:
-        score += 15
-
-    # 型態
-    recent_high = close.tail(60).max()
-
-    if close.iloc[-1] > recent_high * 0.95:
-        score += 15
-
-    # 星級
-    if score >= 90:
-        star = "★★★★★"
-    elif score >= 80:
-        star = "★★★★☆"
-    elif score >= 70:
-        star = "★★★☆☆"
-    elif score >= 60:
-        star = "★★☆☆☆"
-    else:
-        star = "★☆☆☆☆"
-
-    st.subheader("AI評分")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("總分", score)
-    col2.metric("星級", star)
-    col3.metric("股價", round(float(close.iloc[-1]), 2))
-
-    st.write("---")
-
-    st.write("### 技術指標")
-
-    st.write(f"MACD DIF：{float(dif.iloc[-1]):.2f}")
-    st.write(f"MACD Signal：{float(macd.iloc[-1]):.2f}")
-    st.write(f"K值：{float(k.iloc[-1]):.2f}")
-    st.write(f"D值：{float(d.iloc[-1]):.2f}")
-    st.write(f"RSI：{float(rsi.iloc[-1]):.2f}")
-
-    if dif.iloc[-1] > macd.iloc[-1]:
-        st.success("MACD黃金交叉偏多")
-
-    if k.iloc[-1] > d.iloc[-1]:
-        st.success("KD黃金交叉")
-
-    if rsi.iloc[-1] > 80:
-        st.warning("RSI超買")
-
-    if rsi.iloc[-1] < 20:
-        st.warning("RSI超賣")
-
-    target = close.iloc[-1] * 1.10
-    stop = close.iloc[-1] * 0.95
-
-    st.write("---")
-
-    st.subheader("AI分析")
-
-    st.write(f"目標價：{target:.2f}")
-    st.write(f"停損價：{stop:.2f}")
-
-    # ===== K線 =====
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Candlestick(
-            x=df.index,
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            name="K線"
-        )
-    )
-
-    fig.update_layout(
-        title=f"{stock} K線圖",
-        height=700
-    )
-
+    # --- 繪圖區 ---
+    fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], shared_xaxes=True)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K值', line=dict(color='red')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D值', line=dict(color='blue')), row=2, col=1)
+    
+    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("系統載入中，請稍候...")
