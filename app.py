@@ -233,7 +233,7 @@ def analyze(df):
 # 介面
 # =====================
 
-symbsymbol_input = st.text_input(
+symbol_input = st.text_input(
     "請輸入股票代號，例如 台股:2330、上櫃:7828.TWO",
     "2330"
 )
