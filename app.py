@@ -7,8 +7,8 @@ import twstock
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-st.set_page_config"未來小股神 10.3 
-st.title("🔥｜全池 AI 選股器")
+st.set_page_config(page_title="未來小股神 10.3 全池掃描", layout="wide")
+st.title("🔥 未來小股神 10.3｜全池 AI 選股器")
 st.caption("全上市櫃掃描｜技術分＋法人分＋主力分｜自動票選排行榜｜無 K 線頁")
 st.warning("這是選股輔助，不是買賣保證。沒填 FinMind Token 也可跑技術面；有 Token 才會加法人分。")
 
