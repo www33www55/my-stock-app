@@ -1,334 +1,255 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="技術分析", layout="wide")
+st.set_page_config(page_title="主力法人選股器 6.0", layout="wide")
+st.title("🔥 主力法人選股器 6.0｜三大法人＋技術面＋主力動向")
 
-st.title("🚀 ｜台股技術分析 App")
-st.write("突破、MACD、KD背離、RSI、量能、目標價一次看懂")
+st.warning("提醒：這是選股輔助工具，不是保證獲利。法人買超 ≠ 一定上漲，要搭配型態、量、均線。")
 
-# =====================
-# 工具函數
-# =====================
+FINMIND_TOKEN = st.sidebar.text_input("FinMind Token（可不填，但有填比較穩）", type="password")
 
-def fix_symbol(symbol):
-    symbol = symbol.strip()
-    if symbol.isdigit():
-        return symbol + ".TW"
-    return symbol
+stock_input = st.text_area(
+    "輸入股票代號，用逗號分開",
+    value="2409,2303,6271,1714,3037,2313,2382,2330,3060"
+)
 
-def get_data(symbol):
-    data = yf.download(symbol, period="6mo", interval="1d", auto_adjust=False, progress=False)
+days = st.sidebar.slider("抓幾天法人資料", 5, 30, 10)
 
-    if data.empty:
-        return data
+def finmind_get(dataset, stock_id=None, start_date=None, end_date=None):
+    url = "https://api.finmindtrade.com/api/v4/data"
+    params = {"dataset": dataset}
+    if stock_id:
+        params["data_id"] = stock_id
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    if FINMIND_TOKEN:
+        params["token"] = FINMIND_TOKEN
 
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+    r = requests.get(url, params=params, timeout=20)
+    data = r.json()
+    if "data" not in data:
+        return pd.DataFrame()
+    return pd.DataFrame(data["data"])
 
-    data = data.dropna()
-    return data
+def get_price(stock_id):
+    symbol = f"{stock_id}.TW"
+    df = yf.download(symbol, period="6mo", progress=False, auto_adjust=False)
 
-def calc_rsi(close, period=14):
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    if df.empty:
+        symbol = f"{stock_id}.TWO"
+        df = yf.download(symbol, period="6mo", progress=False, auto_adjust=False)
 
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    if df.empty:
+        return pd.DataFrame()
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-def calc_kd(df, period=9):
-    low_min = df["Low"].rolling(period).min()
-    high_max = df["High"].rolling(period).max()
+    return df
 
-    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
-    k = rsv.ewm(com=2).mean()
-    d = k.ewm(com=2).mean()
-    return k, d
+def calc_tech(df):
+    if df.empty or len(df) < 60:
+        return None
 
-def calc_macd(close):
+    close = df["Close"]
+    volume = df["Volume"]
+
+    ma5 = close.rolling(5).mean()
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    hist = macd - signal
-    return macd, signal, hist
 
-def star(score):
-    if score >= 90:
-        return "★★★★★ 超強勢"
-    elif score >= 80:
-        return "★★★★☆ 強勢"
-    elif score >= 70:
-        return "★★★☆☆ 可觀察"
-    elif score >= 60:
-        return "★★☆☆☆ 普通"
-    else:
-        return "★☆☆☆☆ 風險高"
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
+    rsi = 100 - (100 / (1 + gain / loss))
 
-def detect_kd_divergence(df):
-    recent = df.tail(30)
+    low9 = df["Low"].rolling(9).min()
+    high9 = df["High"].rolling(9).max()
+    k = 100 * (close - low9) / (high9 - low9)
+    d = k.rolling(3).mean()
 
-    price_high_now = recent["Close"].iloc[-1]
-    price_high_before = recent["Close"].iloc[:-10].max()
-
-    kd_now = recent["K"].iloc[-1]
-    kd_before = recent["K"].iloc[:-10].max()
-
-    price_low_now = recent["Close"].iloc[-1]
-    price_low_before = recent["Close"].iloc[:-10].min()
-
-    kd_low_now = recent["K"].iloc[-1]
-    kd_low_before = recent["K"].iloc[:-10].min()
-
-    if price_high_now > price_high_before and kd_now < kd_before:
-        return "🔴 明顯頂背離：股價創高，但KD沒有跟著創高，追高要小心"
-    elif price_low_now < price_low_before and kd_low_now > kd_low_before:
-        return "🟢 底背離：股價創低，但KD沒有更低，有機會止跌轉強"
-    else:
-        return "🟢 無明顯KD背離：目前走勢還算健康"
-
-def analyze(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    close = last["Close"]
-    ma5 = last["MA5"]
-    ma10 = last["MA10"]
-    ma20 = last["MA20"]
-    ma60 = last["MA60"]
+    latest_close = close.iloc[-1]
+    latest_volume = volume.iloc[-1]
+    avg_volume = volume.rolling(5).mean().iloc[-1]
 
     score = 0
-    comments = []
+    signals = []
 
-    # 均線
-    if close > ma5 > ma10 > ma20:
+    if latest_close > ma5.iloc[-1] > ma20.iloc[-1]:
         score += 15
-        comments.append("🟢 均線多頭排列，短線趨勢強")
-    elif close > ma20:
-        score += 8
-        comments.append("🟡 股價站上月線，偏多但還不是最強")
-    else:
-        comments.append("🔴 股價跌破月線，短線偏弱")
+        signals.append("多頭排列")
 
-    # 季線
-    if close > ma60:
+    if latest_close > ma60.iloc[-1]:
         score += 10
-        comments.append("🟢 股價站上季線，中線偏多")
-    else:
-        comments.append("🔴 股價還沒站上季線，中線壓力仍在")
+        signals.append("站上季線")
 
-    # 成交量
-    if last["Volume"] > last["VOL20"] * 1.8:
-        score += 18
-        comments.append("🟢 成交量明顯放大，有主力發動味道")
-    elif last["Volume"] > last["VOL20"] * 1.2:
-        score += 12
-        comments.append("🟡 成交量有放大，買氣有增加")
-    else:
-        score += 5
-        comments.append("🟡 量能普通，還不是強攻狀態")
-
-    # MACD
-    if last["MACD"] > last["SIGNAL"] and last["MACD"] > 0 and last["HIST"] > prev["HIST"]:
+    if macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-1] > 0:
         score += 20
-        macd_text = "🟢 MACD主升段啟動：0軸上黃金交叉，動能正在變強"
-    elif last["MACD"] > last["SIGNAL"]:
-        score += 12
-        macd_text = "🟡 MACD黃金交叉：有轉強，但還不是最強主升段"
-    elif last["HIST"] < prev["HIST"]:
-        score += 3
-        macd_text = "🔴 MACD動能變弱：柱狀體縮小，要小心拉回"
-    else:
-        score += 5
-        macd_text = "🟡 MACD普通：方向還不夠明確"
+        signals.append("MACD主升")
 
-    # KD
-    if last["K"] > last["D"] and last["K"] < 80:
+    if rsi.iloc[-1] < 75:
         score += 10
-        kd_text = "🟢 KD黃金交叉，還沒過熱，健康"
-    elif last["K"] > 80:
-        score += 5
-        kd_text = "🟡 KD超過80，偏熱，追高要小心"
-    elif last["K"] < last["D"]:
-        score += 2
-        kd_text = "🔴 KD死亡交叉，短線轉弱"
-    else:
-        score += 5
-        kd_text = "🟡 KD普通"
+        signals.append("RSI未過熱")
 
-    # RSI
-    if last["RSI"] > 90:
-        rsi_text = "🔴 RSI超過90，極度過熱，不建議追高"
-    elif last["RSI"] > 80:
-        rsi_text = "🟡 RSI超過80，偏熱，適合等回踩"
-    elif last["RSI"] < 30:
-        rsi_text = "🟢 RSI低檔，有止跌機會"
-    else:
-        rsi_text = "🟢 RSI正常，沒有過熱"
-
-    # 型態
-    recent_high = df["Close"].tail(30).max()
-    old_high = df["Close"].tail(60).iloc[:-30].max()
-
-    if close >= recent_high * 0.98 and close > old_high:
-        score += 20
-        pattern_text = "🟢 突破前高，可能進入N字第二波"
-    elif close > old_high:
+    if latest_volume > avg_volume * 1.5:
         score += 15
-        pattern_text = "🟢 已突破平台，型態偏多"
-    elif close > ma20 and close > ma60:
-        score += 8
-        pattern_text = "🟡 還在整理區，等突破會更漂亮"
-    else:
-        score += 3
-        pattern_text = "🔴 型態還沒突破，先觀察"
+        signals.append("量放大")
 
-    kd_div = detect_kd_divergence(df)
+    if latest_close >= close.rolling(60).max().iloc[-1] * 0.97:
+        score += 15
+        signals.append("接近60日高")
 
-    score = min(score, 100)
-
-    # 目標價
-    low_30 = df["Low"].tail(30).min()
-    high_30 = df["High"].tail(30).max()
-    wave = high_30 - low_30
-
-    stop_loss = round(close * 0.94, 2)
-    target1 = round(close + wave * 0.5, 2)
-    target2 = round(close + wave, 2)
-
-    if score >= 80 and "頂背離" not in kd_div:
-        conclusion = "🟢 可以觀察買進 / 已持有可續抱"
-    elif score >= 70:
-        conclusion = "🟡 等回踩比較安全"
-    else:
-        conclusion = "🔴 不建議追價"
-
-    summary = f"目前股價趨勢評分 {score} 分，{macd_text}，{kd_div}，整體屬於：{conclusion}"
+    if k.iloc[-1] > d.iloc[-1]:
+        score += 10
+        signals.append("KD偏多")
 
     return {
-        "score": score,
-        "star": star(score),
-        "comments": comments,
-        "macd": macd_text,
-        "kd": kd_text,
-        "rsi": rsi_text,
-        "pattern": pattern_text,
-        "kd_div": kd_div,
-        "conclusion": conclusion,
-        "summary": summary,
-        "stop_loss": stop_loss,
-        "target1": target1,
-        "target2": target2,
+        "收盤價": round(latest_close, 2),
+        "技術分數": score,
+        "技術訊號": "、".join(signals),
+        "RSI": round(rsi.iloc[-1], 1),
+        "MACD": round(macd.iloc[-1], 2),
+        "成交量": int(latest_volume)
     }
 
-# =====================
-# 介面
-# =====================
+def get_institution(stock_id):
+    end = datetime.today().date()
+    start = end - timedelta(days=days * 2)
 
-symbol_input = st.text_input(
-    "請輸入股票代號，例如 台股:2330、上櫃:7828.TWO",
-    "2330"
-)
-
-symbol = fix_symbol(symbol_input)
-
-if st.button("開始分析"):
-    df = get_data(symbol)
+    df = finmind_get(
+        "TaiwanStockInstitutionalInvestorsBuySell",
+        stock_id=stock_id,
+        start_date=str(start),
+        end_date=str(end)
+    )
 
     if df.empty:
-        st.error("抓不到資料，請確認股票代號是否正確")
+        return {
+            "外資": 0,
+            "投信": 0,
+            "自營商": 0,
+            "三大法人": 0,
+            "法人分數": 0,
+            "法人訊號": "無資料"
+        }
+
+    if "buy" not in df.columns or "sell" not in df.columns:
+        return {
+            "外資": 0,
+            "投信": 0,
+            "自營商": 0,
+            "三大法人": 0,
+            "法人分數": 0,
+            "法人訊號": "欄位異常"
+        }
+
+    df["net"] = df["buy"] - df["sell"]
+
+    name_col = "name" if "name" in df.columns else "institutional_investors"
+
+    latest_date = df["date"].max()
+    today_df = df[df["date"] == latest_date]
+
+    foreign = today_df[today_df[name_col].astype(str).str.contains("Foreign|外資", case=False, regex=True)]["net"].sum()
+    trust = today_df[today_df[name_col].astype(str).str.contains("Investment|投信", case=False, regex=True)]["net"].sum()
+    dealer = today_df[today_df[name_col].astype(str).str.contains("Dealer|自營", case=False, regex=True)]["net"].sum()
+
+    total = foreign + trust + dealer
+
+    score = 0
+    signals = []
+
+    if foreign > 0:
+        score += 20
+        signals.append("外資買超")
+    if trust > 0:
+        score += 25
+        signals.append("投信買超")
+    if dealer > 0:
+        score += 10
+        signals.append("自營商買超")
+    if total > 1000:
+        score += 25
+        signals.append("三大法人強買")
+    elif total > 0:
+        score += 10
+        signals.append("法人偏買")
+
+    return {
+        "外資": int(foreign),
+        "投信": int(trust),
+        "自營商": int(dealer),
+        "三大法人": int(total),
+        "法人分數": score,
+        "法人訊號": "、".join(signals) if signals else "法人普通"
+    }
+
+def grade(score):
+    if score >= 90:
+        return "🔥 強勢觀察"
+    elif score >= 75:
+        return "⭐ 偏多"
+    elif score >= 60:
+        return "👀 可觀察"
     else:
-        df["MA5"] = df["Close"].rolling(5).mean()
-        df["MA10"] = df["Close"].rolling(10).mean()
-        df["MA20"] = df["Close"].rolling(20).mean()
-        df["MA60"] = df["Close"].rolling(60).mean()
-        df["VOL20"] = df["Volume"].rolling(20).mean()
+        return "普通"
 
-        df["RSI"] = calc_rsi(df["Close"])
-        df["K"], df["D"] = calc_kd(df)
-        df["MACD"], df["SIGNAL"], df["HIST"] = calc_macd(df["Close"])
+if st.button("開始掃描"):
+    stock_list = [s.strip() for s in stock_input.split(",") if s.strip()]
+    results = []
 
-        df = df.dropna()
+    progress = st.progress(0)
 
-        result = analyze(df)
+    for i, stock_id in enumerate(stock_list):
+        progress.progress((i + 1) / len(stock_list))
 
-        st.subheader(f"📌 {symbol} 分析結果")
+        price_df = get_price(stock_id)
+        tech = calc_tech(price_df)
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("綜合評分", f"{result['score']} 分")
-        col2.metric("強弱等級", result["star"])
-        col3.metric("最新收盤價", round(df["Close"].iloc[-1], 2))
+        if tech is None:
+            continue
 
-        st.divider()
+        inst = get_institution(stock_id)
 
-        st.subheader("📈 K線圖")
+        total_score = tech["技術分數"] + inst["法人分數"]
 
-        fig = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.03,
-            row_heights=[0.7, 0.3]
-        )
+        results.append({
+            "股票": stock_id,
+            "收盤價": tech["收盤價"],
+            "外資": inst["外資"],
+            "投信": inst["投信"],
+            "自營商": inst["自營商"],
+            "三大法人": inst["三大法人"],
+            "技術分數": tech["技術分數"],
+            "法人分數": inst["法人分數"],
+            "總分": total_score,
+            "評價": grade(total_score),
+            "技術訊號": tech["技術訊號"],
+            "法人訊號": inst["法人訊號"],
+            "RSI": tech["RSI"],
+            "MACD": tech["MACD"],
+            "成交量": tech["成交量"]
+        })
 
-        fig.add_trace(
-            go.Candlestick(
-                x=df.index,
-                open=df["Open"],
-                high=df["High"],
-                low=df["Low"],
-                close=df["Close"],
-                name="K線"
-            ),
-            row=1,
-            col=1
-        )
+    if results:
+        df_result = pd.DataFrame(results)
+        df_result = df_result.sort_values("總分", ascending=False)
 
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA5"], name="MA5"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA10"], name="MA10"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["MA60"], name="MA60"), row=1, col=1)
+        st.subheader("🔥 掃描結果")
+        st.dataframe(df_result, use_container_width=True)
 
-        fig.add_trace(
-            go.Bar(x=df.index, y=df["Volume"], name="成交量"),
-            row=2,
-            col=1
-        )
-
-        fig.update_layout(height=700, xaxis_rangeslider_visible=False)
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        st.subheader("🧠 白話分析")
-
-        for c in result["comments"]:
-            st.write(c)
-
-        st.info(result["macd"])
-        st.info(result["kd"])
-        st.info(result["rsi"])
-        st.warning(result["kd_div"])
-        st.success(result["pattern"])
-
-        st.divider()
-
-        st.subheader("🎯 操作參考")
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("停損參考", result["stop_loss"])
-        c2.metric("第一目標價", result["target1"])
-        c3.metric("第二目標價", result["target2"])
-
-        st.subheader("✅ 最後結論")
-        st.success(result["conclusion"])
-        st.write(result["summary"])
+        st.subheader("⭐ 今日優先觀察")
+        st.dataframe(df_result[df_result["總分"] >= 75], use_container_width=True)
+    else:
+        st.error("沒有抓到資料，可能是代號錯誤、資料源限制，或今天法人資料尚未更新。")
