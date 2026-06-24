@@ -1,5 +1,5 @@
-yfinance
-plotly
+streamlit
 pandas
 numpy
-streamlit
+requests
+yfinance
