@@ -4,20 +4,40 @@ import numpy as np
 import requests
 import yfinance as yf
 from datetime import datetime, timedelta
-import plotly.graph_objects as go
+import time
 
-st.set_page_config(page_title="全股主力法人選股器 Ultimate", layout="wide")
+st.set_page_config(
+    page_title="未來小股神 10.0 全股主力掃描器",
+    layout="wide"
+)
 
-st.title("🔥 全股主力法人選股器 Ultimate")
-st.caption("一鍵掃描上市櫃普通股：三大法人 + 技術面 + 量價 + 型態評分")
+st.title("🔥 未來小股神 10.0｜全股主力法人 AI 掃描器")
+st.caption("一鍵掃描上市櫃普通股，自動票選：主力方向、三大法人、技術面、量價、N字、平台突破。")
 
-st.warning("這是選股輔助工具，不是買賣保證。全股掃描 API 量大，強烈建議輸入 FinMind Token。")
+st.warning("這是選股輔助，不是買賣保證。全股掃描建議輸入 FinMind Token，資料會比較穩。")
+
+# =========================
+# 側邊設定
+# =========================
 
 FINMIND_TOKEN = st.sidebar.text_input("FinMind Token", type="password")
+
 TOP_N = st.sidebar.slider("顯示前幾名", 10, 100, 30)
 MAX_STOCKS = st.sidebar.slider("最多掃描幾檔", 50, 1800, 500)
-MIN_PRICE = st.sidebar.number_input("最低股價", 0.0, 500.0, 10.0)
-MIN_VOLUME = st.sidebar.number_input("最低成交量", 0, 200000, 1000)
+MIN_PRICE = st.sidebar.number_input("最低股價", min_value=0.0, value=10.0)
+MIN_VOLUME = st.sidebar.number_input("最低成交量", min_value=0, value=1000)
+MIN_SCORE = st.sidebar.slider("最低總分", 0, 100, 60)
+
+SCAN_DELAY = st.sidebar.slider("掃描延遲秒數，避免API過快", 0.0, 1.0, 0.05)
+
+st.sidebar.markdown("---")
+st.sidebar.write("建議第一次測試：")
+st.sidebar.write("最多掃描 300～500 檔")
+st.sidebar.write("跑順後再拉到 1800 檔")
+
+# =========================
+# FinMind API
+# =========================
 
 @st.cache_data(ttl=3600)
 def finmind_get(dataset, stock_id=None, start_date=None, end_date=None):
@@ -36,9 +56,14 @@ def finmind_get(dataset, stock_id=None, start_date=None, end_date=None):
     try:
         r = requests.get(url, params=params, timeout=20)
         js = r.json()
-        return pd.DataFrame(js.get("data", []))
+        data = js.get("data", [])
+        return pd.DataFrame(data)
     except Exception:
         return pd.DataFrame()
+
+# =========================
+# 股票清單
+# =========================
 
 @st.cache_data(ttl=3600)
 def get_stock_list():
@@ -47,27 +72,41 @@ def get_stock_list():
     if df.empty:
         return pd.DataFrame()
 
-    keep_cols = [c for c in ["stock_id", "stock_name", "type", "industry_category"] if c in df.columns]
-    df = df[keep_cols].copy()
-
     df["stock_id"] = df["stock_id"].astype(str)
 
-    # 排除 ETF、權證、特殊代號
     df = df[df["stock_id"].str.match(r"^\d{4}$")]
-    df = df[~df["stock_name"].astype(str).str.contains("ETF|ETN|指數|期貨|權證|牛|熊", regex=True)]
 
-    # 上市上櫃
+    if "stock_name" in df.columns:
+        df = df[~df["stock_name"].astype(str).str.contains(
+            "ETF|ETN|權證|指數|期貨|牛|熊|特別股|受益證券",
+            regex=True
+        )]
+
     if "type" in df.columns:
         df = df[df["type"].isin(["twse", "tpex"])]
 
-    return df.drop_duplicates("stock_id")
+    keep_cols = []
+    for c in ["stock_id", "stock_name", "type", "industry_category"]:
+        if c in df.columns:
+            keep_cols.append(c)
+
+    df = df[keep_cols].drop_duplicates("stock_id")
+    df = df.sort_values("stock_id")
+
+    return df
+
+# =========================
+# 股價資料
+# =========================
 
 @st.cache_data(ttl=3600)
 def get_price(stock_id):
-    for suffix in [".TW", ".TWO"]:
+    symbols = [f"{stock_id}.TW", f"{stock_id}.TWO"]
+
+    for symbol in symbols:
         try:
             df = yf.download(
-                f"{stock_id}{suffix}",
+                symbol,
                 period="8mo",
                 interval="1d",
                 auto_adjust=False,
@@ -75,29 +114,30 @@ def get_price(stock_id):
                 threads=False
             )
 
-            if not df.empty:
+            if df is not None and not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
+
                 df = df.dropna()
-                return df
+
+                if len(df) >= 80:
+                    return df
         except Exception:
             pass
 
     return pd.DataFrame()
 
+# =========================
+# 技術指標
+# =========================
+
 def calc_rsi(close, period=14):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calc_kd(df):
-    low9 = df["Low"].rolling(9).min()
-    high9 = df["High"].rolling(9).max()
-    k = 100 * (df["Close"] - low9) / (high9 - low9)
-    d = k.rolling(3).mean()
-    return k, d
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
 
 def calc_macd(close):
     ema12 = close.ewm(span=12, adjust=False).mean()
@@ -107,40 +147,77 @@ def calc_macd(close):
     hist = macd - signal
     return macd, signal, hist
 
-def detect_n_pattern(close):
-    if len(close) < 40:
-        return False
+def calc_kd(df):
+    low9 = df["Low"].rolling(9).min()
+    high9 = df["High"].rolling(9).max()
+    k = 100 * (df["Close"] - low9) / (high9 - low9).replace(0, np.nan)
+    d = k.rolling(3).mean()
+    return k.fillna(50), d.fillna(50)
 
-    recent = close.iloc[-40:]
-    low1 = recent.iloc[:15].min()
-    high1 = recent.iloc[:25].max()
-    low2 = recent.iloc[15:35].min()
-    now = recent.iloc[-1]
-
-    return high1 > low1 * 1.08 and low2 > low1 * 1.03 and now >= high1 * 0.98
+# =========================
+# 型態偵測
+# =========================
 
 def detect_platform_breakout(close, volume):
-    if len(close) < 30:
+    if len(close) < 35:
         return False
 
-    box_high = close.iloc[-25:-1].max()
-    box_low = close.iloc[-25:-1].min()
+    box_high = close.iloc[-31:-1].max()
+    box_low = close.iloc[-31:-1].min()
+
+    if box_low <= 0:
+        return False
+
     box_range = (box_high - box_low) / box_low
     vol_ok = volume.iloc[-1] > volume.iloc[-6:-1].mean() * 1.3
+    price_ok = close.iloc[-1] > box_high
 
-    return box_range < 0.15 and close.iloc[-1] > box_high and vol_ok
+    return box_range <= 0.18 and vol_ok and price_ok
 
-def detect_round_bottom(close):
-    if len(close) < 60:
+def detect_n_pattern(close):
+    if len(close) < 45:
         return False
 
-    a = close.iloc[-60:-40].mean()
-    b = close.iloc[-40:-20].mean()
+    recent = close.iloc[-45:]
+
+    low1 = recent.iloc[:15].min()
+    high1 = recent.iloc[10:30].max()
+    low2 = recent.iloc[25:40].min()
+    now = recent.iloc[-1]
+
+    cond1 = high1 > low1 * 1.08
+    cond2 = low2 > low1 * 1.03
+    cond3 = now >= high1 * 0.97
+
+    return cond1 and cond2 and cond3
+
+def detect_round_bottom(close):
+    if len(close) < 70:
+        return False
+
+    a = close.iloc[-70:-45].mean()
+    b = close.iloc[-45:-20].mean()
     c = close.iloc[-20:].mean()
 
     return b < a and c > b and close.iloc[-1] > close.iloc[-20:].mean()
 
-def calc_tech(df):
+def detect_pullback_hold(close):
+    if len(close) < 30:
+        return False
+
+    ma5 = close.rolling(5).mean()
+    ma20 = close.rolling(20).mean()
+
+    recent_low = close.iloc[-5:].min()
+    now = close.iloc[-1]
+
+    return recent_low >= ma20.iloc[-1] * 0.98 and now > ma5.iloc[-1]
+
+# =========================
+# 技術評分
+# =========================
+
+def calc_tech_score(df):
     if df.empty or len(df) < 80:
         return None
 
@@ -158,7 +235,8 @@ def calc_tech(df):
 
     price = float(close.iloc[-1])
     vol = int(volume.iloc[-1])
-    avg_vol5 = volume.rolling(5).mean().iloc[-1]
+    avg_vol5 = volume.iloc[-6:-1].mean()
+    avg_vol20 = volume.iloc[-21:-1].mean()
 
     score = 0
     reasons = []
@@ -167,21 +245,21 @@ def calc_tech(df):
         score += 12
         reasons.append("短均多頭")
 
-    if price > ma60.iloc[-1]:
-        score += 8
-        reasons.append("站上季線")
+    if price > ma20.iloc[-1] > ma60.iloc[-1]:
+        score += 10
+        reasons.append("站上月季線")
 
     if ma20.iloc[-1] > ma20.iloc[-5]:
         score += 8
         reasons.append("月線上彎")
 
     if macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-1] > 0:
-        score += 15
+        score += 14
         reasons.append("MACD主升")
 
     if hist.iloc[-1] > hist.iloc[-2]:
-        score += 5
-        reasons.append("MACD柱增強")
+        score += 6
+        reasons.append("MACD動能增強")
 
     if 45 <= rsi.iloc[-1] <= 75:
         score += 8
@@ -189,27 +267,35 @@ def calc_tech(df):
 
     if k.iloc[-1] > d.iloc[-1] and k.iloc[-1] < 85:
         score += 8
-        reasons.append("KD偏多未過熱")
+        reasons.append("KD偏多")
 
     if vol > avg_vol5 * 1.4:
-        score += 12
+        score += 10
         reasons.append("量能放大")
+
+    if vol > avg_vol20 * 1.2:
+        score += 6
+        reasons.append("量高於20日均量")
 
     if price >= close.rolling(60).max().iloc[-1] * 0.97:
         score += 10
         reasons.append("接近60日高")
 
     if detect_platform_breakout(close, volume):
-        score += 15
+        score += 14
         reasons.append("平台突破")
 
     if detect_n_pattern(close):
         score += 12
-        reasons.append("N字型態")
+        reasons.append("N字第二波")
 
     if detect_round_bottom(close):
         score += 8
         reasons.append("圓弧底")
+
+    if detect_pullback_hold(close):
+        score += 8
+        reasons.append("回踩不破")
 
     return {
         "收盤價": round(price, 2),
@@ -217,13 +303,17 @@ def calc_tech(df):
         "技術分": min(score, 100),
         "RSI": round(float(rsi.iloc[-1]), 1),
         "MACD": round(float(macd.iloc[-1]), 2),
-        "技術原因": "、".join(reasons)
+        "技術原因": "、".join(reasons) if reasons else "技術普通"
     }
 
+# =========================
+# 法人籌碼
+# =========================
+
 @st.cache_data(ttl=3600)
-def get_institution(stock_id, days=14):
+def get_institution_score(stock_id):
     end = datetime.today().date()
-    start = end - timedelta(days=days * 2)
+    start = end - timedelta(days=30)
 
     df = finmind_get(
         "TaiwanStockInstitutionalInvestorsBuySell",
@@ -232,29 +322,41 @@ def get_institution(stock_id, days=14):
         end_date=str(end)
     )
 
+    empty = {
+        "外資": 0,
+        "投信": 0,
+        "自營商": 0,
+        "三大法人": 0,
+        "法人分": 0,
+        "法人買天": 0,
+        "法人原因": "法人無資料"
+    }
+
     if df.empty:
-        return {
-            "外資": 0, "投信": 0, "自營商": 0,
-            "三大法人": 0, "法人分": 0,
-            "法人原因": "法人無資料"
-        }
+        return empty
 
     if "buy" not in df.columns or "sell" not in df.columns:
-        return {
-            "外資": 0, "投信": 0, "自營商": 0,
-            "三大法人": 0, "法人分": 0,
-            "法人原因": "法人欄位異常"
-        }
+        return empty
 
     df["net"] = df["buy"] - df["sell"]
-    name_col = "name" if "name" in df.columns else "institutional_investors"
+
+    name_col = None
+    for c in ["name", "institutional_investors", "institutional_investors_name"]:
+        if c in df.columns:
+            name_col = c
+            break
+
+    if name_col is None:
+        return empty
 
     latest_date = df["date"].max()
     latest = df[df["date"] == latest_date]
 
-    foreign = latest[latest[name_col].astype(str).str.contains("Foreign|外資", case=False, regex=True)]["net"].sum()
-    trust = latest[latest[name_col].astype(str).str.contains("Investment|投信", case=False, regex=True)]["net"].sum()
-    dealer = latest[latest[name_col].astype(str).str.contains("Dealer|自營", case=False, regex=True)]["net"].sum()
+    names = latest[name_col].astype(str)
+
+    foreign = latest[names.str.contains("Foreign|外資", case=False, regex=True)]["net"].sum()
+    trust = latest[names.str.contains("Investment|投信", case=False, regex=True)]["net"].sum()
+    dealer = latest[names.str.contains("Dealer|自營", case=False, regex=True)]["net"].sum()
 
     total = foreign + trust + dealer
 
@@ -265,26 +367,40 @@ def get_institution(stock_id, days=14):
     reasons = []
 
     if foreign > 0:
-        score += 18
-        reasons.append("外資買")
+        score += 16
+        reasons.append("外資買超")
+
     if trust > 0:
         score += 22
-        reasons.append("投信買")
+        reasons.append("投信買超")
+
     if dealer > 0:
         score += 8
-        reasons.append("自營買")
-    if total > 1000:
-        score += 22
+        reasons.append("自營買超")
+
+    if total > 3000:
+        score += 24
         reasons.append("法人強買")
+
+    elif total > 1000:
+        score += 18
+        reasons.append("法人明顯買")
+
     elif total > 0:
         score += 10
         reasons.append("法人偏買")
-    if buy_days >= 4:
-        score += 18
-        reasons.append("法人連買")
+
+    if buy_days >= 5:
+        score += 20
+        reasons.append("法人連5買")
+
+    elif buy_days >= 4:
+        score += 16
+        reasons.append("法人連4買")
+
     elif buy_days >= 3:
         score += 10
-        reasons.append("法人偏連買")
+        reasons.append("法人連3買")
 
     return {
         "外資": int(foreign),
@@ -292,110 +408,179 @@ def get_institution(stock_id, days=14):
         "自營商": int(dealer),
         "三大法人": int(total),
         "法人分": min(score, 100),
+        "法人買天": buy_days,
         "法人原因": "、".join(reasons) if reasons else "法人普通"
     }
 
+# =========================
+# 主力推估
+# =========================
+
+def calc_main_force_score(tech, inst):
+    score = 0
+    reasons = []
+
+    if inst["三大法人"] > 0 and tech["成交量"] > MIN_VOLUME:
+        score += 15
+        reasons.append("資金流入")
+
+    if inst["投信"] > 0:
+        score += 20
+        reasons.append("投信加持")
+
+    if inst["外資"] > 1000:
+        score += 15
+        reasons.append("外資明顯買")
+
+    if "量能放大" in tech["技術原因"]:
+        score += 15
+        reasons.append("量能啟動")
+
+    if "平台突破" in tech["技術原因"]:
+        score += 15
+        reasons.append("突破平台")
+
+    if "N字第二波" in tech["技術原因"]:
+        score += 15
+        reasons.append("第二波型態")
+
+    if "回踩不破" in tech["技術原因"]:
+        score += 10
+        reasons.append("回踩守住")
+
+    return {
+        "主力分": min(score, 100),
+        "主力原因": "、".join(reasons) if reasons else "主力普通"
+    }
+
+# =========================
+# 評價
+# =========================
+
 def final_grade(score):
-    if score >= 85:
-        return "🔥 強勢票選"
-    elif score >= 75:
+    if score >= 88:
+        return "🔥 五星強勢"
+    elif score >= 78:
         return "⭐ 優先觀察"
-    elif score >= 65:
+    elif score >= 68:
         return "👀 可追蹤"
+    elif score >= 60:
+        return "普通偏多"
     else:
         return "普通"
 
-def draw_chart(stock_id, name):
-    df = get_price(stock_id)
-    if df.empty:
-        st.error("抓不到K線")
-        return
+def ai_comment(row):
+    reasons = []
 
-    ma5 = df["Close"].rolling(5).mean()
-    ma20 = df["Close"].rolling(20).mean()
-    ma60 = df["Close"].rolling(60).mean()
+    if row["主力分"] >= 70:
+        reasons.append("主力動能強")
+    if row["法人分"] >= 60:
+        reasons.append("法人籌碼偏多")
+    if row["技術分"] >= 70:
+        reasons.append("技術面強")
+    if row["投信"] > 0:
+        reasons.append("投信有買")
+    if row["三大法人"] > 1000:
+        reasons.append("法人買超明顯")
+    if "N字第二波" in row["技術原因"]:
+        reasons.append("N字第二波")
+    if "平台突破" in row["技術原因"]:
+        reasons.append("平台突破")
+    if "回踩不破" in row["技術原因"]:
+        reasons.append("回踩不破")
 
-    fig = go.Figure()
+    if not reasons:
+        return "條件普通，先觀察"
 
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df["Open"],
-        high=df["High"],
-        low=df["Low"],
-        close=df["Close"],
-        name="K線"
-    ))
+    return "、".join(reasons)
 
-    fig.add_trace(go.Scatter(x=df.index, y=ma5, name="MA5"))
-    fig.add_trace(go.Scatter(x=df.index, y=ma20, name="MA20"))
-    fig.add_trace(go.Scatter(x=df.index, y=ma60, name="MA60"))
-
-    fig.update_layout(
-        title=f"{stock_id} {name} K線圖",
-        height=600,
-        xaxis_rangeslider_visible=False
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+# =========================
+# 掃描主程式
+# =========================
 
 def scan_all():
     stock_df = get_stock_list()
 
     if stock_df.empty:
-        st.error("抓不到股票清單，請確認網路或 FinMind Token。")
+        st.error("抓不到股票清單，請檢查 FinMind Token 或網路。")
         return pd.DataFrame()
 
-    stock_df = stock_df.head(MAX_STOCKS)
+    stock_df = stock_df.head(MAX_STOCKS).reset_index(drop=True)
+
     results = []
 
     progress = st.progress(0)
     status = st.empty()
 
-    total_count = len(stock_df)
+    total = len(stock_df)
 
-    for idx, row in stock_df.iterrows():
-        stock_id = row["stock_id"]
+    for i, row in stock_df.iterrows():
+        stock_id = str(row["stock_id"])
         name = row.get("stock_name", "")
 
-        status.write(f"掃描中：{stock_id} {name}")
+        status.write(f"掃描中：{i+1}/{total}｜{stock_id} {name}")
 
         df_price = get_price(stock_id)
-        tech = calc_tech(df_price)
+
+        tech = calc_tech_score(df_price)
 
         if tech is None:
-            progress.progress(min((len(results) + 1) / total_count, 1.0))
+            progress.progress((i + 1) / total)
             continue
 
         if tech["收盤價"] < MIN_PRICE:
+            progress.progress((i + 1) / total)
             continue
 
         if tech["成交量"] < MIN_VOLUME:
+            progress.progress((i + 1) / total)
             continue
 
-        inst = get_institution(stock_id)
+        inst = get_institution_score(stock_id)
+        main_force = calc_main_force_score(tech, inst)
 
-        total_score = round(tech["技術分"] * 0.6 + inst["法人分"] * 0.4, 1)
+        total_score = round(
+            tech["技術分"] * 0.45 +
+            inst["法人分"] * 0.35 +
+            main_force["主力分"] * 0.20,
+            1
+        )
 
-        results.append({
-            "股票": stock_id,
+        if total_score < MIN_SCORE:
+            progress.progress((i + 1) / total)
+            continue
+
+        item = {
+            "代號": stock_id,
             "名稱": name,
+            "總分": total_score,
+            "評價": final_grade(total_score),
+            "主力分": main_force["主力分"],
+            "法人分": inst["法人分"],
+            "技術分": tech["技術分"],
             "收盤價": tech["收盤價"],
             "成交量": tech["成交量"],
             "外資": inst["外資"],
             "投信": inst["投信"],
             "自營商": inst["自營商"],
             "三大法人": inst["三大法人"],
-            "技術分": tech["技術分"],
-            "法人分": inst["法人分"],
-            "總分": total_score,
-            "評價": final_grade(total_score),
+            "法人買天": inst["法人買天"],
             "RSI": tech["RSI"],
             "MACD": tech["MACD"],
-            "技術原因": tech["技術原因"],
+            "AI判斷": "",
+            "主力原因": main_force["主力原因"],
             "法人原因": inst["法人原因"],
-        })
+            "技術原因": tech["技術原因"]
+        }
 
-        progress.progress(min((idx + 1) / total_count, 1.0))
+        item["AI判斷"] = ai_comment(item)
+
+        results.append(item)
+
+        progress.progress((i + 1) / total)
+
+        if SCAN_DELAY > 0:
+            time.sleep(SCAN_DELAY)
 
     status.write("掃描完成")
 
@@ -403,41 +588,108 @@ def scan_all():
         return pd.DataFrame()
 
     df = pd.DataFrame(results)
-    return df.sort_values("總分", ascending=False)
+    df = df.sort_values("總分", ascending=False).reset_index(drop=True)
+    df.insert(0, "排名", df.index + 1)
 
-tab1, tab2 = st.tabs(["🔥 全股掃描票選", "📈 單股K線檢查"])
+    return df
 
-with tab1:
-    st.subheader("一鍵全股掃描")
+# =========================
+# UI
+# =========================
 
-    if st.button("🚀 開始掃描全上市櫃", use_container_width=True):
-        result = scan_all()
+st.subheader("🏆 今日 AI 全股票選")
 
-        if result.empty:
-            st.error("沒有掃到符合條件的股票。")
+if st.button("🚀 開始全股掃描", use_container_width=True):
+    result = scan_all()
+
+    if result.empty:
+        st.error("沒有掃到符合條件的股票。可以降低最低成交量、最低分數，或增加掃描檔數。")
+    else:
+        st.success("掃描完成")
+
+        show_cols = [
+            "排名", "代號", "名稱", "總分", "評價",
+            "主力分", "法人分", "技術分",
+            "收盤價", "三大法人", "外資", "投信", "自營商",
+            "法人買天", "RSI", "AI判斷"
+        ]
+
+        st.subheader(f"🔥 今日票選前 {TOP_N} 名")
+        st.dataframe(
+            result.head(TOP_N)[show_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.subheader("🔥 五星強勢股")
+        strong = result[result["總分"] >= 88]
+        if strong.empty:
+            st.info("今天沒有五星強勢股。")
         else:
-            st.success("掃描完成")
-
-            st.subheader(f"🏆 今日票選前 {TOP_N} 名")
-            st.dataframe(result.head(TOP_N), use_container_width=True)
-
-            csv = result.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "下載完整掃描結果 CSV",
-                data=csv,
-                file_name="stock_scan_result.csv",
-                mime="text/csv"
+            st.dataframe(
+                strong[show_cols],
+                use_container_width=True,
+                hide_index=True
             )
 
-            st.subheader("🔥 強勢票選")
-            st.dataframe(result[result["總分"] >= 85], use_container_width=True)
+        st.subheader("⭐ N字第二波")
+        n_df = result[result["技術原因"].str.contains("N字第二波", na=False)]
+        if n_df.empty:
+            st.info("今天沒有明顯 N 字第二波。")
+        else:
+            st.dataframe(
+                n_df[show_cols],
+                use_container_width=True,
+                hide_index=True
+            )
 
-            st.subheader("⭐ 優先觀察")
-            st.dataframe(result[(result["總分"] >= 75) & (result["總分"] < 85)], use_container_width=True)
+        st.subheader("🚀 平台突破")
+        breakout_df = result[result["技術原因"].str.contains("平台突破", na=False)]
+        if breakout_df.empty:
+            st.info("今天沒有明顯平台突破。")
+        else:
+            st.dataframe(
+                breakout_df[show_cols],
+                use_container_width=True,
+                hide_index=True
+            )
 
-with tab2:
-    stock_id = st.text_input("輸入股票代號看K線", value="2409")
-    stock_name = st.text_input("股票名稱，可不填", value="友達")
+        st.subheader("🐳 主力偷吃貨")
+        stealth_df = result[
+            (result["主力分"] >= 50) &
+            (result["總分"] < 88) &
+            (result["三大法人"] > 0)
+        ]
 
-    if st.button("畫K線"):
-        draw_chart(stock_id, stock_name)
+        if stealth_df.empty:
+            st.info("今天沒有明顯主力偷吃貨。")
+        else:
+            st.dataframe(
+                stealth_df[show_cols],
+                use_container_width=True,
+                hide_index=True
+            )
+
+        st.subheader("📋 完整細節")
+        detail_cols = [
+            "排名", "代號", "名稱", "總分", "評價",
+            "主力分", "法人分", "技術分",
+            "收盤價", "成交量",
+            "外資", "投信", "自營商", "三大法人",
+            "法人買天", "RSI", "MACD",
+            "AI判斷", "主力原因", "法人原因", "技術原因"
+        ]
+
+        st.dataframe(
+            result[detail_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        csv = result.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "下載完整掃描結果 CSV",
+            data=csv,
+            file_name="future_stock_god_scan_10.csv",
+            mime="text/csv"
+        )
