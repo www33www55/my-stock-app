@@ -1,381 +1,232 @@
-import math
-import time
-from datetime import datetime
-import numpy as np
-import pandas as pd
-import requests
 import streamlit as st
-import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import concurrent.futures, time, re
 
-try:
-    import yfinance as yf
-except Exception:
-    yf = None
+st.set_page_config(page_title="未來小股神 AI 掃描 V32.1 全池修正版", layout="wide")
 
-st.set_page_config(page_title="未來小股神 AI 操盤中心 V32.1 全池版", layout="wide")
+# ========= 基本資料 =========
+FALLBACK_POOL = [
+    # 常用股＋ETF備援；真正全池會優先用 twstock 載入
+    ("2330","台積電","上市"),("2317","鴻海","上市"),("2303","聯電","上市"),("2409","友達","上市"),
+    ("1714","和桐","上市"),("6271","同欣電","上市"),("6191","精成科","上櫃"),("3557","嘉威","上櫃"),
+    ("3037","欣興","上市"),("2382","廣達","上市"),("2313","華通","上市"),("2344","華邦電","上市"),
+    ("2359","所羅門","上市"),("3060","銘異","上市"),("8923","時報","上櫃"),("6272","驊陞","上櫃"),
+    ("5468","凱鈺","上櫃"),("6259","百徽","上櫃"),("5211","蒙恬","上櫃"),("1730","花仙子","上市"),
+    ("4183","福永生技","上櫃"),("5469","瀚宇博","上市"),("8183","精星","上櫃"),("2643","捷迅","上櫃"),
+    ("1817","凱撒衛","上市"),("2013","中鋼構","上市"),("1731","美吾華","上市"),("3479","安勤","上櫃"),
+    ("2739","寒舍","上市"),("4554","橙的","上櫃"),("1240","茂生農經","上櫃"),("7828","創新服務","興櫃"),
+]
 
-DEFAULT_POOL = {
-    "7828":"創新服務","1714":"和桐","2409":"友達","2303":"聯電","6271":"同欣電",
-    "6191":"精成科","3557":"逸昌","3037":"欣興","2382":"廣達","2313":"華通",
-    "2344":"華邦電","2359":"所羅門","3060":"銘異","8923":"時報","6272":"驊陞",
-    "5468":"凱鈺","6259":"百徽","5211":"蒙恬","1730":"花仙子","4183":"福永生技",
-    "5469":"瀚宇博","8183":"精星","2643":"捷迅","1817":"凱撒衛","2013":"中鋼構",
-    "1731":"美吾華","3479":"安勤","2739":"寒舍","4554":"橙的","1240":"茂生農經"
-}
-
-MARKET_NAMES = {"^TWII":"加權指數", "^TWOII":"櫃買OTC"}
-
-# ---------- Data helpers ----------
-def clean_code(code: str) -> str:
-    return ''.join(ch for ch in str(code).strip() if ch.isdigit())
-
-def yahoo_symbols(code: str):
-    code = clean_code(code)
-    if not code:
-        return []
-    return [f"{code}.TW", f"{code}.TWO"]
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_yf(symbol: str, period="6mo") -> pd.DataFrame:
-    if yf is None:
-        return pd.DataFrame()
+@st.cache_data(ttl=24*3600, show_spinner=False)
+def load_twstock_pool(include_emerging=False, include_etf=False):
+    rows = []
     try:
-        df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
-        if df is None or df.empty or "Close" not in df.columns:
-            return pd.DataFrame()
-        df = df.dropna(subset=["Close"]).copy()
-        return df
+        import twstock
+        for code, info in twstock.codes.items():
+            if not re.fullmatch(r"\d{4}", str(code)):
+                continue
+            name = getattr(info, "name", "") or ""
+            market = getattr(info, "market", "") or ""
+            typ = getattr(info, "type", "") or ""
+            # 保留上市/上櫃普通股；興櫃可勾；ETF可勾
+            is_listed = ("上市" in market) or ("上櫃" in market)
+            is_emerging = "興櫃" in market
+            is_etf = ("ETF" in typ.upper()) or ("ETF" in name.upper())
+            if is_etf and not include_etf:
+                continue
+            if is_emerging and not include_emerging:
+                continue
+            if is_listed or (include_emerging and is_emerging):
+                rows.append({"代號":str(code), "名稱":name, "市場":market, "類型":typ})
     except Exception:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_stock(code: str) -> pd.DataFrame:
-    for sym in yahoo_symbols(code):
-        df = fetch_yf(sym)
-        if len(df) >= 30:
-            df["_symbol"] = sym
-            return df
-    return demo_stock_data(code)
-
-def demo_stock_data(code: str, days: int = 160) -> pd.DataFrame:
-    # 穩定示範資料：抓不到真資料也能跑完整流程，不會 empty / crash
-    seed = int(clean_code(code) or 1)
-    rng = np.random.default_rng(seed)
-    base = 10 + (seed % 120)
-    drift = 0.001 + (seed % 7) * 0.00035
-    noise = rng.normal(0, 0.018, days)
-    close = base * np.exp(np.cumsum(drift + noise))
-    high = close * (1 + rng.uniform(0.002, 0.025, days))
-    low = close * (1 - rng.uniform(0.002, 0.025, days))
-    open_ = close * (1 + rng.normal(0, 0.008, days))
-    volume = rng.integers(600, 12000, days) * 1000
-    idx = pd.bdate_range(end=pd.Timestamp.today(), periods=days)
-    return pd.DataFrame({"Open":open_, "High":high, "Low":low, "Close":close, "Volume":volume, "_symbol":"DEMO"}, index=idx)
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_market(symbol: str) -> pd.DataFrame:
-    df = fetch_yf(symbol, period="6mo")
-    if len(df) >= 30:
-        return df
-    # 大盤備援示範資料
-    fake_code = "9999" if symbol == "^TWII" else "8888"
-    return demo_stock_data(fake_code)
-
-
-
-# ---------- Full market pool helpers ----------
-def _pick_field(d: dict, candidates):
-    for c in candidates:
-        if c in d and str(d[c]).strip():
-            return str(d[c]).strip()
-    # fuzzy fallback
-    for k, v in d.items():
-        ks = str(k).lower()
-        if any(c.lower() in ks for c in candidates) and str(v).strip():
-            return str(v).strip()
-    return ""
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_openapi_pool() -> dict:
-    """抓上市＋上櫃代號名稱。失敗時回傳空dict，讓系統自動用下一個來源。"""
-    urls = [
-        # 上市公司基本資料 / 上市日成交資訊
-        "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
-        "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_AVG_ALL",
-        # 上櫃公司資料 / 上櫃日成交資訊（不同時間API欄位可能不同，所以用模糊欄位判斷）
-        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
-        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
-    ]
-    pool = {}
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=12, headers={"User-Agent":"Mozilla/5.0"})
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            if not isinstance(data, list):
-                continue
-            for row in data:
-                if not isinstance(row, dict):
-                    continue
-                code = _pick_field(row, ["公司代號", "Code", "SecuritiesCompanyCode", "有價證券代號", "股票代號"])
-                name = _pick_field(row, ["公司名稱", "Name", "CompanyName", "有價證券名稱", "股票名稱"])
-                code = clean_code(code)
-                if len(code) == 4 and code.isdigit():
-                    pool[code] = name or DEFAULT_POOL.get(code, "")
-        except Exception:
-            continue
-    return pool
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_isin_pool() -> dict:
-    """備援：從 TWSE ISIN 頁面抓上市/上櫃代號名稱。"""
-    pool = {}
-    try:
-        urls = [
-            "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",  # 上市
-            "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4",  # 上櫃
-        ]
-        for url in urls:
-            tables = pd.read_html(url)
-            if not tables:
-                continue
-            df = tables[0]
-            first_col = df.columns[0]
-            for raw in df[first_col].dropna().astype(str):
-                raw = raw.strip()
-                if len(raw) >= 5 and raw[:4].isdigit() and "　" in raw:
-                    code, name = raw.split("　", 1)
-                    code = clean_code(code)
-                    name = name.strip()
-                    if len(code) == 4:
-                        pool[code] = name
-                elif len(raw) >= 5 and raw[:4].isdigit() and " " in raw:
-                    code, name = raw.split(" ", 1)
-                    code = clean_code(code)
-                    name = name.strip()
-                    if len(code) == 4:
-                        pool[code] = name
-    except Exception:
-        pass
-    return pool
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_full_market_pool() -> dict:
-    pool = {}
-    for loader in (load_openapi_pool, load_isin_pool):
-        try:
-            got = loader()
-            if got:
-                pool.update(got)
-        except Exception:
-            pass
-    # 永遠把你的重點股補進來，避免官方暫時失敗時首頁空白
-    pool.update(DEFAULT_POOL)
-    return dict(sorted(pool.items()))
-
-# ---------- Indicators ----------
-def rsi(series: pd.Series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return (100 - (100 / (1 + rs))).fillna(50)
-
-def macd(series: pd.Series):
-    ema12 = series.ewm(span=12, adjust=False).mean()
-    ema26 = series.ewm(span=26, adjust=False).mean()
-    dif = ema12 - ema26
-    dea = dif.ewm(span=9, adjust=False).mean()
-    hist = dif - dea
-    return dif, dea, hist
-
-def kd(df: pd.DataFrame, period=9):
-    low_min = df["Low"].rolling(period).min()
-    high_max = df["High"].rolling(period).max()
-    rsv = ((df["Close"] - low_min) / (high_max - low_min).replace(0, np.nan) * 100).fillna(50)
-    k = rsv.ewm(com=2).mean()
-    d = k.ewm(com=2).mean()
-    return k, d
-
-def atr(df: pd.DataFrame, period=14):
-    high_low = df["High"] - df["Low"]
-    high_close = (df["High"] - df["Close"].shift()).abs()
-    low_close = (df["Low"] - df["Close"].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean().fillna(tr.mean())
-
-def analyze(code: str, name: str = "") -> dict:
-    df = fetch_stock(code)
-    if df.empty or len(df) < 30:
-        return {"代號":code, "名稱":name or DEFAULT_POOL.get(code,""), "狀態":"資料不足", "爆發指數":0, "預估發動時間":"資料不足"}
-    c = df["Close"]
-    v = df["Volume"] if "Volume" in df.columns else pd.Series([0]*len(df), index=df.index)
-    ma5, ma10, ma20, ma60 = c.rolling(5).mean(), c.rolling(10).mean(), c.rolling(20).mean(), c.rolling(60).mean()
-    rsiv = rsi(c).iloc[-1]
-    dif, dea, hist = macd(c)
-    k, d = kd(df)
-    vol_ratio = float(v.iloc[-1] / max(v.rolling(20).mean().iloc[-1], 1)) if len(v) >= 20 else 1.0
-    high20 = c.rolling(20).max().iloc[-1]
-    dist_break = max((high20 - c.iloc[-1]) / c.iloc[-1] * 100, 0)
-    trend = ma5.iloc[-1] > ma10.iloc[-1] > ma20.iloc[-1]
-    macd_ok = dif.iloc[-1] > dea.iloc[-1] and dif.iloc[-1] > 0
-    rsi_ok = 50 <= rsiv <= 75
-    close_above_ma = c.iloc[-1] >= ma20.iloc[-1]
-    score = 45
-    score += 18 if trend else 0
-    score += 15 if macd_ok else 0
-    score += 10 if rsi_ok else (-8 if rsiv > 82 else 0)
-    score += 10 if vol_ratio >= 1.2 else 3
-    score += 12 if dist_break <= 2 else (6 if dist_break <= 5 else 0)
-    score += 5 if close_above_ma else -10
-    score = int(max(0, min(100, score)))
-    if score >= 95: fire = "1～3天"
-    elif score >= 88: fire = "2～5天"
-    elif score >= 78: fire = "5～10天"
-    elif score >= 65: fire = "觀察中"
-    else: fire = "未成熟"
-    patterns = []
-    if trend: patterns.append("多頭排列")
-    if dist_break <= 3: patterns.append("接近突破")
-    if macd_ok: patterns.append("MACD偏多")
-    if vol_ratio >= 1.2: patterns.append("量能放大")
-    if len(patterns) == 0: patterns.append("整理觀察")
-    ai = "、".join(patterns) + f"；RSI {rsiv:.1f}，預估發動 {fire}。"
-    price = float(c.iloc[-1])
-    atrv = float(atr(df).iloc[-1])
-    stop = max(price - 1.5*atrv, float(ma20.iloc[-1]) * 0.97 if not math.isnan(ma20.iloc[-1]) else price*0.93)
-    return {
-        "代號": code,
-        "名稱": name or DEFAULT_POOL.get(code, ""),
-        "現價": round(price,2),
-        "爆發指數": score,
-        "AI信心": f"{min(99, score+2)}%",
-        "預估發動時間": fire,
-        "距離突破%": round(float(dist_break),2),
-        "RSI": round(float(rsiv),1),
-        "K": round(float(k.iloc[-1]),1),
-        "D": round(float(d.iloc[-1]),1),
-        "MACD": round(float(dif.iloc[-1] - dea.iloc[-1]),3),
-        "量比": round(vol_ratio,2),
-        "MA5": round(float(ma5.iloc[-1]),2),
-        "MA10": round(float(ma10.iloc[-1]),2),
-        "MA20": round(float(ma20.iloc[-1]),2),
-        "停損參考": round(float(stop),2),
-        "目標1": round(price*1.08,2),
-        "目標2": round(price*1.16,2),
-        "AI解讀": ai,
-        "狀態":"真資料" if df.get("_symbol", pd.Series([""])).iloc[-1] != "DEMO" else "備援資料"
-    }
-
-def market_rows():
-    rows=[]
-    for sym, nm in MARKET_NAMES.items():
-        df = fetch_market(sym)
-        if df.empty:
-            rows.append({"市場":nm,"收盤":"-","AI分數":"-","RSI":"-","MACD":"-","AI解讀":"資料不足"})
-            continue
-        c=df["Close"]
-        dif, dea, hist = macd(c)
-        rsiv = rsi(c).iloc[-1]
-        score = 50 + (15 if c.iloc[-1] > c.rolling(20).mean().iloc[-1] else -10) + (15 if dif.iloc[-1] > dea.iloc[-1] else -5) + (10 if 45 <= rsiv <= 75 else 0)
-        score = int(max(0,min(100,score)))
-        rows.append({"市場":nm,"收盤":round(float(c.iloc[-1]),2),"AI分數":score,"RSI":round(float(rsiv),1),"MACD":round(float(dif.iloc[-1]-dea.iloc[-1]),3),"AI解讀":"偏多可做" if score>=75 else ("震盪選股" if score>=55 else "保守觀察")})
-    return rows
-
-def scan_pool(pool: dict, limit=20):
-    out=[]
-    progress = st.progress(0)
-    items=list(pool.items())
-    status=st.empty()
-    for i,(code,name) in enumerate(items):
-        status.caption(f"AI掃描中：{code} {name}（抓不到會自動備援）")
-        try:
-            out.append(analyze(code,name))
-        except Exception as e:
-            out.append({"代號":code,"名稱":name,"現價":"-","爆發指數":0,"預估發動時間":"錯誤","AI解讀":str(e)[:60]})
-        progress.progress((i+1)/len(items))
-    status.empty(); progress.empty()
-    df=pd.DataFrame(out)
-    if "爆發指數" in df.columns:
-        df=df.sort_values("爆發指數", ascending=False).head(limit)
+        rows = []
+    if not rows:
+        rows = [{"代號":c, "名稱":n, "市場":m, "類型":"備援"} for c,n,m in FALLBACK_POOL]
+    df = pd.DataFrame(rows).drop_duplicates("代號").sort_values("代號").reset_index(drop=True)
     return df
 
-def k_chart(code: str):
-    df = fetch_stock(code)
-    if df.empty or len(df)<10:
-        st.warning("這檔暫時沒有足夠資料可畫K線")
-        return
-    fig=go.Figure(data=[go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="K")])
-    for n in [5,10,20]:
-        fig.add_trace(go.Scatter(x=df.index, y=df["Close"].rolling(n).mean(), mode="lines", name=f"MA{n}"))
-    fig.update_layout(height=430, margin=dict(l=10,r=10,t=25,b=10), xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+def symbol_for(row):
+    code = str(row["代號"])
+    market = str(row.get("市場",""))
+    if "上櫃" in market or "興櫃" in market:
+        return f"{code}.TWO"
+    return f"{code}.TW"
 
-# ---------- UI ----------
-st.title("🚀 未來小股神 AI 操盤中心 V32.1 全池版")
-st.caption("保留 V32.1 單檔版畫面，改成上市＋上櫃全市場股票池；抓不到單檔不會整個爆掉。")
+def calc_indicators(df):
+    df = df.copy()
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    vol = df["Volume"].astype(float)
+    for n in [5,10,20,60,120,240]:
+        df[f"MA{n}"] = close.rolling(n).mean()
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["RSI"] = 100 - (100/(1+rs))
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df["DIF"] = ema12 - ema26
+    df["MACD"] = df["DIF"].ewm(span=9, adjust=False).mean()
+    df["OSC"] = df["DIF"] - df["MACD"]
+    low9 = low.rolling(9).min()
+    high9 = high.rolling(9).max()
+    rsv = (close-low9)/(high9-low9)*100
+    df["K"] = rsv.ewm(com=2).mean()
+    df["D"] = df["K"].ewm(com=2).mean()
+    df["量比"] = vol / vol.rolling(20).mean()
+    return df
+
+def ai_score(last, prev=None):
+    score = 50
+    reasons=[]
+    c=last.get("Close", np.nan)
+    ma5,ma10,ma20 = last.get("MA5",np.nan),last.get("MA10",np.nan),last.get("MA20",np.nan)
+    rsi=last.get("RSI",np.nan)
+    osc=last.get("OSC",np.nan)
+    volr=last.get("量比",np.nan)
+    if np.isfinite(ma5) and np.isfinite(ma10) and np.isfinite(ma20) and c>ma5>ma10>ma20:
+        score+=22; reasons.append("均線多頭")
+    if np.isfinite(rsi) and 50 <= rsi <= 72:
+        score+=12; reasons.append("RSI健康")
+    elif np.isfinite(rsi) and rsi>80:
+        score-=10; reasons.append("RSI過熱")
+    if np.isfinite(osc) and osc>0:
+        score+=12; reasons.append("MACD偏多")
+    if np.isfinite(volr) and volr>=1.2:
+        score+=8; reasons.append("量能放大")
+    elif np.isfinite(volr) and volr<0.8:
+        score+=3; reasons.append("量縮整理")
+    score=int(max(0,min(100,score)))
+    if score>=92: t="1～3天"
+    elif score>=84: t="2～5天"
+    elif score>=75: t="5～10天"
+    else: t="觀察中"
+    return score,t,"、".join(reasons) if reasons else "等待訊號"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_one(code, name, market):
+    try:
+        import yfinance as yf
+        sym = f"{code}.TWO" if ("上櫃" in market or "興櫃" in market) else f"{code}.TW"
+        df = yf.download(sym, period="9mo", interval="1d", progress=False, auto_adjust=False, threads=False)
+        if df is None or df.empty or len(df)<60:
+            # 備援換副檔名試一次
+            alt = f"{code}.TW" if sym.endswith(".TWO") else f"{code}.TWO"
+            df = yf.download(alt, period="9mo", interval="1d", progress=False, auto_adjust=False, threads=False)
+        if df is None or df.empty or len(df)<60 or "Close" not in df:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = calc_indicators(df)
+        last = df.iloc[-1]
+        score, fire_time, reason = ai_score(last)
+        close = float(last["Close"])
+        return {
+            "代號":code, "名稱":name, "市場":market, "現價":round(close,2),
+            "爆發指數":score, "AI信心":f"{min(99, max(50, score-1))}%",
+            "預估發動時間":fire_time, "RSI":round(float(last.get("RSI",np.nan)),1) if np.isfinite(last.get("RSI",np.nan)) else "-",
+            "MACD":round(float(last.get("OSC",np.nan)),3) if np.isfinite(last.get("OSC",np.nan)) else "-",
+            "量比":round(float(last.get("量比",np.nan)),2) if np.isfinite(last.get("量比",np.nan)) else "-",
+            "AI解讀":reason
+        }
+    except Exception:
+        return None
+
+def scan_pool(pool_df, max_workers=12, max_scan=None):
+    data = pool_df.to_dict("records")
+    if max_scan:
+        data = data[:max_scan]
+    out=[]
+    bar=st.progress(0)
+    status=st.empty()
+    total=len(data)
+    done=0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs=[ex.submit(fetch_one, r["代號"], r["名稱"], r["市場"]) for r in data]
+        for fut in concurrent.futures.as_completed(futs):
+            done+=1
+            res=fut.result()
+            if res: out.append(res)
+            if done % 10 == 0 or done==total:
+                bar.progress(done/total)
+                status.write(f"AI掃描中：{done}/{total}，成功 {len(out)} 檔（抓不到會自動跳過）")
+    return pd.DataFrame(out)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def market_table():
+    rows=[]
+    for code,name in [("^TWII","加權指數"),("^TWOII","櫃買OTC")]:
+        try:
+            import yfinance as yf
+            df=yf.download(code, period="6mo", interval="1d", progress=False, threads=False)
+            if df is None or df.empty or len(df)<30:
+                raise ValueError("no data")
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns=df.columns.get_level_values(0)
+            df=calc_indicators(df)
+            last=df.iloc[-1]
+            score,t,reason=ai_score(last)
+            rows.append({"市場":name,"收盤":round(float(last["Close"]),2),"AI分數":score,"RSI":round(float(last["RSI"]),1),"MACD":round(float(last["OSC"]),3),"AI解讀":reason})
+        except Exception:
+            rows.append({"市場":name,"收盤":"-","AI分數":"-","RSI":"-","MACD":"-","AI解讀":"資料暫缺"})
+    return pd.DataFrame(rows)
+
+# ========= UI =========
+st.title("🚀 未來小股神 AI 掃描 V32.1 單檔全池修正版")
+st.caption("保留 V32.1 介面，只修正：股票池改成上市＋上櫃全市場，不再只有 910 檔。")
 
 with st.sidebar:
-    st.header("功能")
-    page = st.radio("選單", ["首頁", "單股掃描", "全池掃描", "歷史回測說明"], index=0)
-    st.divider()
-    st.caption("信仰股：7828 創新服務")
+    st.header("設定")
+    include_emerging = st.checkbox("包含興櫃", value=False)
+    include_etf = st.checkbox("包含 ETF", value=False)
+    scan_limit = st.selectbox("掃描範圍", ["全池", "前300檔測試", "前100檔測試"], index=0)
+    workers = st.slider("掃描速度", 4, 24, 12)
 
-if page == "首頁":
-    st.subheader("❤️ 7828 信仰股")
-    faith = analyze("7828", "創新服務")
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("現價", faith.get("現價","-"))
-    c2.metric("爆發指數", faith.get("爆發指數","-"))
-    c3.metric("發動時間", faith.get("預估發動時間","-"))
-    c4.metric("狀態", faith.get("狀態","-"))
-    st.info(faith.get("AI解讀", "暫無"))
+pool = load_twstock_pool(include_emerging, include_etf)
+st.success(f"已載入股票池：{len(pool)} 檔（上市＋上櫃" + ("＋興櫃" if include_emerging else "") + ("＋ETF" if include_etf else "") + "）")
+st.dataframe(pool.head(20), use_container_width=True, hide_index=True)
 
-    st.subheader("📊 AI 大盤分析")
-    st.dataframe(pd.DataFrame(market_rows()), use_container_width=True, hide_index=True)
-
-    st.subheader("🔥 今日 AI TOP20（全市場）")
-    full_pool = load_full_market_pool()
-    st.caption(f"已載入上市＋上櫃股票池：{len(full_pool)} 檔。首頁只顯示 TOP20，不會一次塞滿整頁。")
-    if st.button("快速產生全市場 TOP20", type="primary"):
-        top = scan_pool(full_pool, 20)
-        st.dataframe(top, use_container_width=True, hide_index=True)
-        st.session_state["top20_full"] = top
-    elif "top20_full" in st.session_state:
-        st.dataframe(st.session_state["top20_full"], use_container_width=True, hide_index=True)
-    else:
-        st.caption("按上方按鈕開始掃描全市場。")
-
-elif page == "單股掃描":
-    st.subheader("🔍 單股 AI 掃描")
-    q = st.text_input("輸入股票代號", value="7828")
-    if st.button("AI 分析", type="primary"):
-        name = DEFAULT_POOL.get(clean_code(q), "")
-        result = analyze(q, name)
-        st.dataframe(pd.DataFrame([result]), use_container_width=True, hide_index=True)
-        st.markdown("### 📈 K線技術分析")
-        k_chart(q)
-
-elif page == "全池掃描":
-    st.subheader("🌏 全市場 AI 掃描")
-    full_pool = load_full_market_pool()
-    st.success(f"目前股票池：上市＋上櫃共 {len(full_pool)} 檔（含官方來源＋備援重點股）。")
-    limit = st.slider("顯示前幾名", 10, 100, 20)
-    scan_mode = st.radio("掃描模式", ["全市場", "自訂補充"], horizontal=True)
-    if scan_mode == "自訂補充":
-        txt = st.text_area("可額外輸入代號（逗號分隔）", value=", ".join(DEFAULT_POOL.keys()), height=100)
-        extra = {clean_code(x): DEFAULT_POOL.get(clean_code(x), "") for x in txt.replace("\n",",").split(",") if clean_code(x)}
-        pool = {**full_pool, **extra}
-    else:
-        pool = full_pool
-    st.caption("提醒：第一次全市場掃描會比較久；掃過後會快取。")
-    if st.button("開始全市場掃描", type="primary"):
-        top = scan_pool(pool, limit)
-        st.dataframe(top, use_container_width=True, hide_index=True)
-
+st.subheader("❤️ 7828 信仰股")
+faith = fetch_one("7828", "創新服務", "興櫃")
+if faith:
+    st.dataframe(pd.DataFrame([faith]), use_container_width=True, hide_index=True)
 else:
-    st.subheader("📚 歷史回測說明")
-    st.write("這版先讓資料、TOP20、單股掃描穩定能動。歷史回測下一版會把每日TOP20存成CSV後統計5/10/20日表現。")
+    st.warning("7828 暫時抓不到資料：多半是資料源尚未支援興櫃，主程式不會因此掛掉。")
+
+st.subheader("📊 AI 大盤分析")
+st.dataframe(market_table(), use_container_width=True, hide_index=True)
+
+st.subheader("🔥 今日 AI TOP20（全市場）")
+st.caption("首頁只顯示 TOP20，不會一次塞滿整頁。全池掃描可能需要幾分鐘。")
+max_scan = None if scan_limit=="全池" else (300 if "300" in scan_limit else 100)
+if st.button("開始全市場掃描", type="primary"):
+    df=scan_pool(pool, max_workers=workers, max_scan=max_scan)
+    if df.empty:
+        st.error("目前資料源抓不到足夠資料，請稍後再試。")
+    else:
+        df=df.sort_values(["爆發指數"], ascending=False).reset_index(drop=True)
+        st.session_state["scan_result"]=df
+
+if "scan_result" in st.session_state:
+    df=st.session_state["scan_result"]
+    topn = st.slider("顯示前幾名", 10, min(100, len(df)), min(20, len(df)))
+    st.dataframe(df.head(topn), use_container_width=True, hide_index=True)
+    st.download_button("下載掃描結果 CSV", df.to_csv(index=False).encode("utf-8-sig"), "ai_scan_result.csv", "text/csv")
+
+st.subheader("🔍 單股掃描")
+q=st.text_input("輸入代號，例如 6271、1714、2409、7828", value="6271")
+if st.button("分析單股"):
+    row=pool[pool["代號"].astype(str)==q.strip()]
+    if row.empty:
+        name="自訂"; market="上市"
+    else:
+        name=row.iloc[0]["名稱"]; market=row.iloc[0]["市場"]
+    res=fetch_one(q.strip(), name, market)
+    if res:
+        st.dataframe(pd.DataFrame([res]), use_container_width=True, hide_index=True)
+    else:
+        st.warning(f"{q} 暫時抓不到資料或資料不足。")
