@@ -5,6 +5,11 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 
+try:
+    import twstock
+except Exception:
+    twstock = None
+
 st.set_page_config(page_title="未來小股神 AI 選股系統 V20 PRO", layout="wide")
 
 FAITH_STOCK = "7828"
@@ -12,6 +17,29 @@ DEFAULT_POOL = [
     "7828", "1714", "2409", "2303", "6271", "6191", "3557", "3037", "2382",
     "2313", "2344", "2359", "3060", "8923", "6272", "5468", "6259"
 ]
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_all_tw_stock_codes():
+    """取得上市櫃全股票代號；若 twstock 暫時失敗，至少保留常用備援池。"""
+    if twstock is None:
+        return DEFAULT_POOL
+    try:
+        codes = []
+        for code, info in twstock.codes.items():
+            market = getattr(info, "market", "")
+            type_ = getattr(info, "type", "")
+            name = getattr(info, "name", "")
+            # 只抓台股股票，排除權證、ETF、受益證券等，避免全池太髒
+            if code.isdigit() and len(code) == 4 and type_ == "股票" and market in ["上市", "上櫃"]:
+                codes.append(code)
+        # 信仰股永遠放第一個
+        codes = sorted(set(codes))
+        if FAITH_STOCK in codes:
+            codes.remove(FAITH_STOCK)
+        return [FAITH_STOCK] + codes
+    except Exception:
+        return DEFAULT_POOL
+
 
 def tw_symbol(code: str) -> str:
     code = str(code).strip()
@@ -189,19 +217,39 @@ if query:
 
 st.divider()
 st.subheader("🔥 今日 AI TOP 掃描")
-custom = st.text_area("股票池，可自行增減，用逗號分隔", value=", ".join(DEFAULT_POOL), height=80)
-if st.button("🚀 掃描股票池", type="primary"):
+scan_mode = st.radio(
+    "掃描模式",
+    ["全池模式：上市＋上櫃股票", "自訂股票池"],
+    horizontal=True,
+)
+
+all_codes = get_all_tw_stock_codes()
+st.caption(f"全池目前約 {len(all_codes)} 檔；因 Yahoo 逐檔抓資料，全池第一次掃描會比較久，建議先設 TOP 數量。")
+
+if scan_mode == "全池模式：上市＋上櫃股票":
+    limit = st.slider("全池掃描檔數上限（手機建議先 200～500；電腦可拉高）", 50, len(all_codes), min(300, len(all_codes)), step=50)
+    codes = all_codes[:limit]
+    with st.expander("查看目前全池前 300 檔代號"):
+        st.write(", ".join(all_codes[:300]))
+else:
+    custom = st.text_area("自訂股票池，可自行增減，用逗號分隔", value=", ".join(DEFAULT_POOL), height=80)
     codes = [x.strip() for x in custom.replace("\n", ",").split(",") if x.strip()]
+
+if st.button("🚀 開始掃描", type="primary"):
     rows = []
     bar = st.progress(0)
+    status = st.empty()
     for i, code in enumerate(codes):
+        status.write(f"掃描中：{code}（{i+1}/{len(codes)}）")
         res, _ = analyze(code)
         if res:
             rows.append(res)
-        bar.progress((i + 1) / len(codes))
+        bar.progress((i + 1) / max(len(codes), 1))
+    status.empty()
     if rows:
         out = pd.DataFrame(rows).sort_values(["爆發指數", "距離突破%"], ascending=[False, True])
         cols = ["股票代號", "現價", "爆發指數", "預估發動時間", "距離突破%", "RSI", "量比", "風險", "建議", "停損參考", "第一目標", "第二目標", "第三目標", "AI一句話"]
+        st.success(f"掃描完成：成功取得 {len(out)} 檔資料")
         st.dataframe(out[cols], use_container_width=True, hide_index=True)
         st.download_button("下載掃描結果 CSV", out[cols].to_csv(index=False).encode("utf-8-sig"), "ai_scan_result.csv", "text/csv")
     else:
