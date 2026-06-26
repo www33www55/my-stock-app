@@ -1,213 +1,452 @@
-import io, time, math
+# -*- coding: utf-8 -*-
+"""
+未來小股神 AI 操盤中心 - Serious Project v1
+目標：穩定、可部署、不中斷。先把資料、單股、全池、評分、大盤做對。
+"""
+from __future__ import annotations
+
+import io
+import math
+import time
 from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
-import plotly.graph_objects as go
 
-st.set_page_config(page_title='未來小股神 AI 操盤中心 V34', layout='wide')
+st.set_page_config(page_title="未來小股神 AI 操盤中心", layout="wide", page_icon="📈")
 
-FALLBACK = pd.DataFrame([
-    ('1101','台泥','上市'),('1102','亞泥','上市'),('1210','大成','上市'),('1301','台塑','上市'),('1303','南亞','上市'),
-    ('1414','東和','上市'),('1515','力山','上市'),('1714','和桐','上市'),('1717','長興','上市'),('1718','中纖','上市'),
-    ('1730','花仙子','上市'),('1731','美吾華','上市'),('1817','凱撒衛','上市'),('2013','中鋼構','上市'),('2303','聯電','上市'),
-    ('2313','華通','上市'),('2330','台積電','上市'),('2344','華邦電','上市'),('2359','所羅門','上市'),('2382','廣達','上市'),
-    ('2409','友達','上市'),('2527','宏璟','上市'),('2739','寒舍','上市'),('3037','欣興','上市'),('3060','銘異','上市'),
-    ('3228','金麗科','上櫃'),('3479','安勤','上櫃'),('3557','逸昌','上櫃'),('3567','逸昌','上櫃'),('3588','通嘉','上市'),
-    ('4183','福永生技','上櫃'),('4554','橙的','上櫃'),('5211','蒙恬','上櫃'),('5432','新門','上櫃'),('5468','凱鈺','上櫃'),
-    ('5469','瀚宇博','上市'),('6129','普誠','上櫃'),('6139','亞翔','上市'),('6144','得利影','上櫃'),('6182','合晶','上櫃'),
-    ('6191','精成科','上市'),('6246','臺龍','上櫃'),('6259','百徽','上櫃'),('6270','倍微','上櫃'),('6271','同欣電','上市'),
-    ('6272','驊陞','上市'),('6582','申豐','上市'),('7828','創新服務','上櫃'),('8183','精星','上市'),('8284','三竹','上櫃'),
-    ('8443','阿瘦','上市'),('8923','時報','上櫃')], columns=['代號','名稱','市場'])
+APP_VERSION = "Serious Project v1.0"
+FAITH_CODE = "7828"
 
-@st.cache_data(ttl=60*60*12)
-def load_twse():
-    url='https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'
+DEFAULT_POOL = [
+    ("7828", "創新服務", "TWO"),
+    ("3567", "逸昌", "TWO"),
+    ("6191", "精成科", "TWO"),
+    ("6271", "同欣電", "TW"),
+    ("2303", "聯電", "TW"),
+    ("2330", "台積電", "TW"),
+    ("2409", "友達", "TW"),
+]
+
+# -----------------------------
+# 資料層：股票池 / 歷史價格 / 大盤
+# -----------------------------
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def load_twse_list() -> pd.DataFrame:
+    """上市清單。失敗時回傳空表，避免 App 爆掉。"""
+    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
     try:
-        data=requests.get(url, timeout=12).json()
-        rows=[]
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        rows = []
         for x in data:
-            code=str(x.get('Code','')).strip()
-            name=str(x.get('Name','')).strip()
-            if code.isdigit() and len(code)==4 and name:
-                rows.append((code,name,'上市'))
-        return pd.DataFrame(rows, columns=['代號','名稱','市場']).drop_duplicates('代號')
+            code = str(x.get("公司代號", "")).strip()
+            name = str(x.get("公司簡稱", x.get("公司名稱", ""))).strip()
+            if code.isdigit() and len(code) == 4:
+                rows.append({"代號": code, "名稱": name, "市場": "TW"})
+        return pd.DataFrame(rows).drop_duplicates("代號")
     except Exception:
-        return pd.DataFrame(columns=['代號','名稱','市場'])
+        return pd.DataFrame(columns=["代號", "名稱", "市場"])
 
-@st.cache_data(ttl=60*60*12)
-def load_tpex():
-    urls=[
-        'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
-        'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O'
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def load_tpex_list() -> pd.DataFrame:
+    """上櫃清單。TPEX 來源常變，提供多層防呆。"""
+    urls = [
+        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_company",
     ]
     for url in urls:
         try:
-            data=requests.get(url, timeout=12).json()
-            rows=[]
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            rows = []
             for x in data:
-                code=str(x.get('SecuritiesCompanyCode') or x.get('CompanyCode') or x.get('Code') or '').strip()
-                name=str(x.get('CompanyName') or x.get('SecuritiesCompanyName') or x.get('Name') or '').strip()
-                if code.isdigit() and len(code)==4 and name:
-                    rows.append((code,name,'上櫃'))
-            df=pd.DataFrame(rows, columns=['代號','名稱','市場']).drop_duplicates('代號')
-            if len(df)>100: return df
+                code = str(x.get("SecuritiesCompanyCode", x.get("公司代號", ""))).strip()
+                name = str(x.get("CompanyShortName", x.get("公司簡稱", x.get("公司名稱", "")))).strip()
+                if code.isdigit() and len(code) == 4:
+                    rows.append({"代號": code, "名稱": name, "市場": "TWO"})
+            df = pd.DataFrame(rows).drop_duplicates("代號")
+            if not df.empty:
+                return df
         except Exception:
             pass
-    return pd.DataFrame(columns=['代號','名稱','市場'])
+    return pd.DataFrame(columns=["代號", "名稱", "市場"])
 
-@st.cache_data(ttl=60*60*12)
-def stock_pool():
-    twse=load_twse(); tpex=load_tpex()
-    df=pd.concat([twse,tpex,FALLBACK], ignore_index=True).drop_duplicates('代號', keep='first')
-    df=df[df['代號'].astype(str).str.fullmatch(r'\d{4}')].sort_values('代號').reset_index(drop=True)
-    return df
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def load_stock_pool() -> pd.DataFrame:
+    twse = load_twse_list()
+    tpex = load_tpex_list()
+    df = pd.concat([twse, tpex], ignore_index=True).drop_duplicates("代號")
+    # 若官方清單暫時抓不到，至少保留核心池，讓系統不會空白
+    fallback = pd.DataFrame(DEFAULT_POOL, columns=["代號", "名稱", "市場"])
+    if df.empty or len(df) < 500:
+        df = fallback
+    else:
+        # 確保 7828 等常用代號存在
+        df = pd.concat([df, fallback], ignore_index=True).drop_duplicates("代號")
+    return df.sort_values("代號").reset_index(drop=True)
 
-@st.cache_data(ttl=60*10)
-def get_price(code, market, period='8mo'):
-    suffix='.TW' if market=='上市' else '.TWO'
-    for sym in [f'{code}{suffix}', f'{code}.TW', f'{code}.TWO']:
+def yf_symbol(code: str, market: str) -> str:
+    return f"{code}.TW" if market == "TW" else f"{code}.TWO"
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def fetch_price(code: str, market: str, period: str = "6mo") -> pd.DataFrame:
+    """抓價格。先用市場別，再雙後綴備援。永遠回傳 DataFrame，不拋例外。"""
+    suffixes = [yf_symbol(code, market), f"{code}.TW", f"{code}.TWO"]
+    seen = []
+    for symbol in suffixes:
+        if symbol in seen:
+            continue
+        seen.append(symbol)
         try:
-            df=yf.download(sym, period=period, interval='1d', progress=False, auto_adjust=False, threads=False)
+            df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=False, threads=False)
             if isinstance(df.columns, pd.MultiIndex):
-                df.columns=df.columns.get_level_values(0)
-            if df is not None and not df.empty and 'Close' in df and df['Close'].dropna().shape[0] > 35:
-                return df.dropna(), sym
+                df.columns = df.columns.get_level_values(0)
+            if not df.empty and "Close" in df.columns and df["Close"].dropna().shape[0] >= 35:
+                return df.dropna(subset=["Close"]).copy()
         except Exception:
-            pass
-    return pd.DataFrame(), ''
+            continue
+    return pd.DataFrame()
 
-def rsi(s, n=14):
-    d=s.diff(); up=d.clip(lower=0); dn=-d.clip(upper=0)
-    rs=up.rolling(n).mean()/(dn.rolling(n).mean()+1e-9)
-    return 100-(100/(1+rs))
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_index(symbol: str) -> pd.DataFrame:
+    try:
+        df = yf.download(symbol, period="6mo", interval="1d", progress=False, auto_adjust=False, threads=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df.dropna(subset=["Close"]) if "Close" in df.columns else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
-def indicators(df):
-    c=df['Close']; h=df['High']; l=df['Low']; v=df['Volume']
-    out={}
-    for n in [5,10,20,60]: out[f'MA{n}']=float(c.rolling(n).mean().iloc[-1])
-    out['close']=float(c.iloc[-1]); out['high20']=float(h.rolling(20).max().iloc[-1]); out['high60']=float(h.rolling(60).max().iloc[-1])
-    out['low20']=float(l.rolling(20).min().iloc[-1]); out['RSI']=float(rsi(c).iloc[-1])
-    ema12=c.ewm(span=12).mean(); ema26=c.ewm(span=26).mean(); dif=ema12-ema26; macd=dif.ewm(span=9).mean()
-    out['DIF']=float(dif.iloc[-1]); out['MACD']=float(macd.iloc[-1]); out['MACD_hist']=float((dif-macd).iloc[-1]); out['MACD_prev']=float((dif-macd).iloc[-2])
-    low9=l.rolling(9).min(); high9=h.rolling(9).max(); k=100*(c-low9)/(high9-low9+1e-9); d=k.rolling(3).mean()
-    out['K']=float(k.iloc[-1]); out['D']=float(d.iloc[-1]); out['vol_ratio']=float(v.iloc[-1]/(v.rolling(20).mean().iloc[-1]+1e-9))
-    out['dist_high_pct']=float((out['high20']-out['close'])/(out['high20']+1e-9)*100)
-    out['range20_pct']=float((out['high20']-out['low20'])/(out['close']+1e-9)*100)
+# -----------------------------
+# 指標層
+# -----------------------------
+def rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(window).mean()
+    loss = -delta.clip(upper=0).rolling(window).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+def kd(df: pd.DataFrame, n: int = 9) -> Tuple[pd.Series, pd.Series]:
+    low_min = df["Low"].rolling(n).min()
+    high_max = df["High"].rolling(n).max()
+    rsv = (df["Close"] - low_min) / (high_max - low_min).replace(0, np.nan) * 100
+    k = rsv.ewm(com=2, adjust=False).mean()
+    d = k.ewm(com=2, adjust=False).mean()
+    return k, d
+
+def macd(series: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
+    dif = ema12 - ema26
+    dea = dif.ewm(span=9, adjust=False).mean()
+    hist = dif - dea
+    return dif, dea, hist
+
+def safe_float(x, default=0.0) -> float:
+    try:
+        if pd.isna(x):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+def compute_features(df: pd.DataFrame) -> Dict:
+    c = df["Close"]
+    v = df["Volume"] if "Volume" in df.columns else pd.Series([0]*len(df), index=df.index)
+    out = {}
+    for n in [5, 10, 20, 60, 120, 240]:
+        out[f"MA{n}"] = safe_float(c.rolling(n).mean().iloc[-1]) if len(c) >= n else safe_float(c.mean())
+    out["Close"] = safe_float(c.iloc[-1])
+    out["PrevClose"] = safe_float(c.iloc[-2]) if len(c) >= 2 else out["Close"]
+    out["RSI"] = safe_float(rsi(c).iloc[-1], 50)
+    k, d = kd(df)
+    out["K"] = safe_float(k.iloc[-1], 50)
+    out["D"] = safe_float(d.iloc[-1], 50)
+    dif, dea, hist = macd(c)
+    out["DIF"] = safe_float(dif.iloc[-1])
+    out["DEA"] = safe_float(dea.iloc[-1])
+    out["MACDHist"] = safe_float(hist.iloc[-1])
+    out["MACDHistPrev"] = safe_float(hist.iloc[-2]) if len(hist) >= 2 else out["MACDHist"]
+    out["Vol"] = safe_float(v.iloc[-1])
+    out["VolMA20"] = safe_float(v.rolling(20).mean().iloc[-1]) if len(v) >= 20 else safe_float(v.mean())
+    out["VolRatio"] = out["Vol"] / out["VolMA20"] if out["VolMA20"] else 0
+    out["High60"] = safe_float(c.rolling(60).max().iloc[-1]) if len(c) >= 60 else safe_float(c.max())
+    out["DistHigh60"] = (out["High60"] - out["Close"]) / out["High60"] * 100 if out["High60"] else 999
+    out["Ret1"] = (out["Close"] - out["PrevClose"]) / out["PrevClose"] * 100 if out["PrevClose"] else 0
+    # 平台：20日高低區間不要太寬
+    if len(c) >= 20:
+        h20, l20 = c.tail(20).max(), c.tail(20).min()
+        out["Range20Pct"] = safe_float((h20 - l20) / l20 * 100 if l20 else 999)
+    else:
+        out["Range20Pct"] = 999
     return out
 
-def score_stock(code, name, market):
-    df, sym=get_price(code, market)
+# -----------------------------
+# AI 評分層：不再全部 100，也不再 0 分太嚴格
+# -----------------------------
+def score_stock(feat: Dict) -> Dict:
+    score = 0
+    reasons: List[str] = []
+    risks: List[str] = []
+
+    close = feat["Close"]
+    ma5, ma10, ma20, ma60 = feat["MA5"], feat["MA10"], feat["MA20"], feat["MA60"]
+    r = feat["RSI"]
+    k, d = feat["K"], feat["D"]
+    dif, dea, hist, hist_prev = feat["DIF"], feat["DEA"], feat["MACDHist"], feat["MACDHistPrev"]
+    vol_ratio = feat["VolRatio"]
+    dist60 = feat["DistHigh60"]
+    range20 = feat["Range20Pct"]
+
+    # 技術 45
+    if ma5 > ma10 > ma20:
+        score += 15; reasons.append("均線多頭排列")
+    elif close > ma20:
+        score += 8; reasons.append("站上月線")
+    if close > ma60:
+        score += 5; reasons.append("站上季線")
+    if 45 <= r <= 72:
+        score += 12; reasons.append(f"RSI健康 {r:.1f}")
+    elif 72 < r <= 80:
+        score += 5; reasons.append(f"RSI偏熱但可接受 {r:.1f}")
+    if dif > dea:
+        score += 10; reasons.append("MACD多方")
+    if hist > hist_prev:
+        score += 5; reasons.append("MACD動能增加")
+    if k > d:
+        score += 5; reasons.append("KD偏多")
+
+    # 量價 25
+    if 1.2 <= vol_ratio <= 3.5:
+        score += 12; reasons.append(f"量能放大 {vol_ratio:.2f}倍")
+    elif 0.8 <= vol_ratio < 1.2:
+        score += 5; reasons.append("量能穩定")
+    if dist60 <= 3:
+        score += 8; reasons.append("接近60日高點")
+    elif dist60 <= 8:
+        score += 4; reasons.append("距高點不遠")
+    if feat["Ret1"] > 0 and vol_ratio >= 1:
+        score += 5; reasons.append("價漲量穩")
+
+    # 型態 20
+    if range20 <= 10:
+        score += 10; reasons.append("平台整理")
+    elif range20 <= 18:
+        score += 5; reasons.append("區間整理")
+    if ma5 >= ma10 and ma20 >= ma60:
+        score += 5; reasons.append("主升段結構")
+    if close >= ma5 and dist60 <= 10:
+        score += 5; reasons.append("靠近突破區")
+
+    # 籌碼 10（v1 無外部法人資料，先用 OBV/量價代理，不假裝有真法人）
+    if feat["Ret1"] >= 0 and vol_ratio >= 1.1:
+        score += 6; reasons.append("資金承接跡象")
+    if close >= ma20:
+        score += 4; reasons.append("籌碼未明顯轉弱")
+
+    # 扣分
+    if r > 85:
+        score -= 15; risks.append("RSI過熱")
+    elif r > 80:
+        score -= 8; risks.append("RSI偏高")
+    if close < ma20:
+        score -= 12; risks.append("跌破月線")
+    if close < ma5:
+        score -= 6; risks.append("跌破5日線")
+    if feat["Ret1"] < -3 and vol_ratio > 1.5:
+        score -= 18; risks.append("放量長黑風險")
+    if vol_ratio > 5:
+        score -= 8; risks.append("爆量過大需確認")
+
+    score = int(max(0, min(100, round(score))))
+
+    # AI信心獨立計算：分數 + 風險數校正，不直接複製分數
+    confidence = max(45, min(96, int(score * 0.82 + 18 - len(risks) * 4)))
+
+    if score >= 88:
+        launch = "1~3天"
+    elif score >= 72:
+        launch = "2~5天"
+    elif score >= 58:
+        launch = "5~10天"
+    elif r > 82:
+        launch = "高風險"
+    else:
+        launch = "觀察中"
+
+    stars = "⭐" * max(1, min(5, math.ceil(score / 20)))
+    summary = "、".join(reasons[:3]) if reasons else "資料偏弱，先觀察"
+    if risks:
+        summary += "；風險：" + "、".join(risks[:2])
+
+    return {
+        "爆發指數": score,
+        "AI信心": confidence,
+        "發動時間": launch,
+        "星級": stars,
+        "AI解讀": summary,
+        "加分原因": "、".join(reasons),
+        "風險": "、".join(risks) if risks else "低",
+    }
+
+def analyze_one(code: str, name: str, market: str) -> Dict:
+    df = fetch_price(code, market)
     if df.empty:
-        return {'代號':code,'名稱':name,'市場':market,'狀態':'資料不足','現價':np.nan,'爆發指數':0,'AI信心':'50%','發動時間':'觀察中','評等':'⭐','RSI':np.nan,'MACD':np.nan,'量比':np.nan,'AI解讀':'抓不到資料'}
-    x=indicators(df); score=0; reasons=[]; risks=[]
-    c=x['close']
-    if x['MA5']>x['MA10']>x['MA20']: score+=20; reasons.append('均線多頭')
-    elif c>x['MA20']: score+=8; reasons.append('站上月線')
-    if x['RSI']>=50 and x['RSI']<=72: score+=12; reasons.append('RSI健康')
-    elif x['RSI']<50: score+=4
-    if x['DIF']>x['MACD']: score+=13; reasons.append('MACD偏多')
-    if x['MACD_hist']>x['MACD_prev']: score+=7; reasons.append('MACD動能增')
-    if x['K']>x['D']: score+=5; reasons.append('KD偏多')
-    if x['vol_ratio']>1.3: score+=10; reasons.append('量能放大')
-    if x['dist_high_pct']>=0 and x['dist_high_pct']<=3: score+=13; reasons.append('接近突破')
-    elif x['dist_high_pct']<=6: score+=6; reasons.append('接近壓力')
-    if x['range20_pct']<12 and c>x['MA20']: score+=10; reasons.append('平台整理')
-    # 風險扣分
-    if x['RSI']>82: score-=12; risks.append('RSI過熱')
-    if c<x['MA20']: score-=10; risks.append('跌破月線')
-    if c<x['MA5']: score-=6; risks.append('跌破5MA')
-    if x['vol_ratio']>4 and df['Close'].iloc[-1] < df['Open'].iloc[-1]: score-=18; risks.append('爆量長黑')
-    score=int(max(0,min(100,score)))
-    conf=max(50,min(96, int(score*0.85+18)))
-    if score>=90: launch='已發動'
-    elif score>=80: launch='1~3天'
-    elif score>=68: launch='2~5天'
-    elif score>=55: launch='5~10天'
-    else: launch='觀察中'
-    if x['RSI']>82: launch='高風險'
-    stars='⭐'*max(1,min(5,math.ceil(score/20)))
-    text='、'.join(reasons[:4]) if reasons else '條件未成熟'
-    if risks: text += '；風險：' + '、'.join(risks[:2])
-    return {'代號':code,'名稱':name,'市場':market,'現價':round(c,2),'爆發指數':score,'AI信心':f'{conf}%','發動時間':launch,'評等':stars,'RSI':round(x['RSI'],1),'MACD':round(x['MACD_hist'],3),'量比':round(x['vol_ratio'],2),'AI解讀':text,'狀態':'OK'}
+        return {"代號": code, "名稱": name, "市場": market, "狀態": "資料不足"}
+    feat = compute_features(df)
+    sc = score_stock(feat)
+    return {
+        "代號": code,
+        "名稱": name,
+        "市場": market,
+        "收盤": round(feat["Close"], 2),
+        "爆發指數": sc["爆發指數"],
+        "AI信心": sc["AI信心"],
+        "發動時間": sc["發動時間"],
+        "星級": sc["星級"],
+        "RSI": round(feat["RSI"], 1),
+        "量比": round(feat["VolRatio"], 2),
+        "MACD": "多" if feat["DIF"] > feat["DEA"] else "空",
+        "AI解讀": sc["AI解讀"],
+        "風險": sc["風險"],
+        "狀態": "OK",
+    }
 
-@st.cache_data(ttl=60*5)
-def market_eval():
-    rows=[]
-    for label,sym in [('加權指數','^TWII'),('櫃買OTC','^TWOII')]:
-        try:
-            df=yf.download(sym, period='6mo', interval='1d', progress=False, threads=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns=df.columns.get_level_values(0)
-            if df.empty or len(df)<30: raise ValueError('no data')
-            x=indicators(df); s=50
-            if x['close']>x['MA20']: s+=10
-            if x['MA5']>x['MA10']: s+=8
-            if x['DIF']>x['MACD']: s+=8
-            if 45<=x['RSI']<=70: s+=6
-            s=max(0,min(100,s)); mood='偏多震盪' if s>=70 else ('中性整理' if s>=55 else '偏弱保守')
-            rows.append({'市場':label,'收盤':round(x['close'],2),'AI分數':s,'RSI':round(x['RSI'],1),'MACD':round(x['MACD_hist'],3),'AI解讀':mood})
-        except Exception:
-            rows.append({'市場':label,'收盤':'-','AI分數':'-','RSI':'-','MACD':'-','AI解讀':'資料暫無'})
-    return pd.DataFrame(rows)
+def market_tech(symbol: str, label: str) -> Dict:
+    df = fetch_index(symbol)
+    if df.empty:
+        return {"市場": label, "狀態": "資料不足"}
+    feat = compute_features(df)
+    score = 0
+    notes = []
+    if feat["Close"] > feat["MA20"]: score += 25; notes.append("站上月線")
+    if feat["MA5"] > feat["MA10"] > feat["MA20"]: score += 25; notes.append("短均多頭")
+    if 45 <= feat["RSI"] <= 70: score += 20; notes.append("RSI健康")
+    if feat["DIF"] > feat["DEA"]: score += 20; notes.append("MACD偏多")
+    if feat["VolRatio"] >= 0.8: score += 10; notes.append("量能正常")
+    temp = "偏多" if score >= 70 else "中性偏多" if score >= 55 else "保守"
+    return {
+        "市場": label,
+        "收盤": round(feat["Close"], 2),
+        "技術分": int(score),
+        "RSI": round(feat["RSI"], 1),
+        "MACD": "多" if feat["DIF"] > feat["DEA"] else "空",
+        "量比": round(feat["VolRatio"], 2),
+        "AI判斷": f"{temp}：{'、'.join(notes[:3])}",
+        "狀態": "OK",
+    }
 
-def scan(pool, max_n=0):
-    if max_n and max_n>0: pool=pool.head(max_n)
-    results=[]; total=len(pool); prog=st.progress(0); txt=st.empty()
-    for i,row in pool.iterrows():
-        txt.write(f'掃描中：{i+1}/{total}  {row.代號} {row.名稱}')
-        try: results.append(score_stock(str(row.代號), str(row.名稱), str(row.市場)))
-        except Exception as e:
-            results.append({'代號':row.代號,'名稱':row.名稱,'市場':row.市場,'狀態':str(e),'爆發指數':0,'AI信心':'50%','發動時間':'觀察中','評等':'⭐'})
-        prog.progress(min(1.0,(i+1)/max(total,1)))
-    txt.empty(); prog.empty()
-    df=pd.DataFrame(results)
-    return df.sort_values(['爆發指數'], ascending=False).reset_index(drop=True)
+# -----------------------------
+# UI
+# -----------------------------
+st.title("🚀 未來小股神 AI 操盤中心")
+st.caption(f"{APP_VERSION}｜先求穩定，再求完整。不是全部100分，不是假全池。")
 
-st.title('🚀 未來小股神 AI 操盤中心 V34 Ultimate')
-pool=stock_pool()
-st.success(f'已載入股票池：{len(pool)} 檔（上市＋上櫃；若官方資料源失敗會自動備援）')
+pool = load_stock_pool()
 
-st.subheader('📊 AI 大盤技術評估')
-st.dataframe(market_eval(), use_container_width=True, hide_index=True)
+with st.sidebar:
+    st.header("設定")
+    st.write(f"股票池載入：**{len(pool)} 檔**")
+    max_scan = st.number_input("最多掃描檔數（0=全池，雲端很慢）", min_value=0, max_value=3000, value=200, step=50)
+    min_score = st.slider("最低爆發指數", 0, 100, 0)
+    st.info("建議先掃 200～500 檔確認穩定；全池可設 0，但會很慢。")
 
-tabs=st.tabs(['🔥 全池TOP20','🔍 單股掃描','📋 股票池'])
-with tabs[0]:
-    st.subheader('🔥 今日 AI TOP20（全市場）')
-    max_n=st.number_input('最多掃描檔數（0=全池；手機/免費雲建議先試 100）', min_value=0, max_value=3000, value=0, step=50)
-    show_n=st.slider('顯示前幾名', 5, 100, 20)
-    if st.button('開始全池掃描 / 更新TOP20', type='primary'):
-        st.info('全池會逐檔下載，免費 Streamlit Cloud 可能需要較久。')
-        res=scan(pool, int(max_n))
-        st.session_state['last_scan']=res
-    if 'last_scan' in st.session_state:
-        res=st.session_state['last_scan']
-        ok=res[res['狀態'].eq('OK')] if '狀態' in res else res
-        st.write(f'掃描完成：有效 {len(ok)} 檔 / 股票池 {len(res)} 檔')
-        cols=['代號','名稱','市場','現價','爆發指數','AI信心','發動時間','評等','RSI','MACD','量比','AI解讀']
-        st.dataframe(res[cols].head(show_n), use_container_width=True, hide_index=True)
-        st.download_button('下載本次掃描CSV', res.to_csv(index=False).encode('utf-8-sig'), 'v34_scan.csv')
-with tabs[1]:
-    st.subheader('🔍 單股 AI 掃描')
-    q=st.text_input('輸入代號或名稱', value='7828')
-    if st.button('分析單股'):
-        match=pool[(pool['代號'].astype(str)==q.strip()) | (pool['名稱'].astype(str).str.contains(q.strip(), na=False))]
-        if match.empty:
-            st.error('股票池找不到這檔，請確認代號或名稱。')
+tab_home, tab_single, tab_pool, tab_market = st.tabs(["🏠 首頁", "🔍 單股掃描", "🌏 全池掃描", "📊 大盤技術"])
+
+with tab_home:
+    st.subheader("❤️ 7828 信仰股")
+    faith_row = pool[pool["代號"] == FAITH_CODE]
+    if faith_row.empty:
+        faith = analyze_one("7828", "創新服務", "TWO")
+    else:
+        r0 = faith_row.iloc[0]
+        faith = analyze_one(r0["代號"], r0["名稱"], r0["市場"])
+    if faith.get("狀態") == "OK":
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("爆發指數", faith["爆發指數"])
+        c2.metric("AI信心", f"{faith['AI信心']}%")
+        c3.metric("發動時間", faith["發動時間"])
+        c4.metric("RSI", faith["RSI"])
+        st.write(f"**AI：** {faith['AI解讀']}")
+    else:
+        st.warning("7828 暫時資料不足；系統不會爆掉，請稍後重試或確認資料源。")
+
+    st.subheader("📊 AI 大盤快速評估")
+    m1, m2 = market_tech("^TWII", "加權指數"), market_tech("^TWOII", "櫃買OTC")
+    st.dataframe(pd.DataFrame([m1, m2]), use_container_width=True)
+
+with tab_single:
+    st.subheader("🔍 單股 AI 掃描")
+    q = st.text_input("輸入股票代號或名稱", value="7828")
+    if st.button("開始分析", type="primary"):
+        q = q.strip()
+        hit = pool[(pool["代號"] == q) | (pool["名稱"].str.contains(q, na=False))]
+        if hit.empty and q.isdigit():
+            hit = pd.DataFrame([{"代號": q, "名稱": q, "市場": "TW"}])
+        if hit.empty:
+            st.error("找不到股票")
         else:
-            r=match.iloc[0]
-            ans=score_stock(str(r.代號), str(r.名稱), str(r.市場))
-            st.metric(f"{ans['代號']} {ans['名稱']} 爆發", ans['爆發指數'])
-            c1,c2,c3,c4=st.columns(4)
-            c1.metric('AI信心', ans['AI信心']); c2.metric('發動', ans['發動時間']); c3.metric('RSI', ans.get('RSI','-')); c4.metric('量比', ans.get('量比','-'))
-            st.write('AI解讀：', ans.get('AI解讀',''))
-            df,sym=get_price(str(r.代號), str(r.市場))
-            if not df.empty:
-                fig=go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-                fig.update_layout(height=420, margin=dict(l=10,r=10,t=30,b=10))
-                st.plotly_chart(fig, use_container_width=True)
-with tabs[2]:
-    st.subheader('📋 股票池檢查')
-    st.write(f'總檔數：{len(pool)}')
-    st.dataframe(pool, use_container_width=True, hide_index=True)
+            row = hit.iloc[0]
+            res = analyze_one(row["代號"], row["名稱"], row["市場"])
+            if res.get("狀態") != "OK":
+                st.warning(f"{row['代號']} {row['名稱']} 資料不足")
+            else:
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("爆發指數", res["爆發指數"])
+                c2.metric("AI信心", f"{res['AI信心']}%")
+                c3.metric("發動時間", res["發動時間"])
+                c4.metric("RSI", res["RSI"])
+                c5.metric("量比", res["量比"])
+                st.write(f"### {res['代號']} {res['名稱']} {res['星級']}")
+                st.write(res["AI解讀"])
+                dfp = fetch_price(row["代號"], row["市場"])
+                if not dfp.empty:
+                    st.line_chart(dfp["Close"].tail(90))
+                st.dataframe(pd.DataFrame([res]), use_container_width=True)
+
+with tab_pool:
+    st.subheader("🌏 全池 AI 掃描")
+    st.write(f"目前股票池：**{len(pool)} 檔**。掃描上限：**{'全池' if max_scan == 0 else max_scan}**")
+    if st.button("開始全池掃描", type="primary"):
+        scan_df = pool.copy()
+        if max_scan and max_scan > 0:
+            scan_df = scan_df.head(int(max_scan))
+        total = len(scan_df)
+        progress = st.progress(0)
+        status = st.empty()
+        rows = []
+        start = time.time()
+        for i, row in scan_df.iterrows():
+            idx = len(rows) + 1
+            status.write(f"掃描中：{i+1}/{total}　{row['代號']} {row['名稱']}")
+            res = analyze_one(row["代號"], row["名稱"], row["市場"])
+            if res.get("狀態") == "OK" and res.get("爆發指數", 0) >= min_score:
+                rows.append(res)
+            progress.progress(min(1.0, (i + 1) / total))
+        elapsed = time.time() - start
+        result = pd.DataFrame(rows)
+        if result.empty:
+            st.warning("沒有符合條件的股票，請降低最低爆發指數或稍後重試資料源。")
+        else:
+            result = result.sort_values(["爆發指數", "AI信心"], ascending=False).reset_index(drop=True)
+            result.insert(0, "排名", result.index + 1)
+            st.success(f"掃描完成：有效 {len(result)} 檔 / 掃描 {total} 檔，耗時 {elapsed:.1f} 秒")
+            st.dataframe(result.head(20), use_container_width=True, height=600)
+            csv = result.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("下載完整掃描結果 CSV", csv, "future_stock_ai_scan.csv", "text/csv")
+
+with tab_market:
+    st.subheader("📊 大盤技術評估")
+    data = pd.DataFrame([market_tech("^TWII", "加權指數"), market_tech("^TWOII", "櫃買OTC")])
+    st.dataframe(data, use_container_width=True)
+    st.caption("大盤資料來源為 Yahoo 指數；若雲端暫時抓不到，會顯示資料不足，不會讓 App 掛掉。")
+
+st.divider()
+st.caption("投資有風險。本工具為資料整理與策略輔助，不構成買賣建議。")
