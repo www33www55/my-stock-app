@@ -12,7 +12,7 @@ try:
 except Exception:
     yf = None
 
-st.set_page_config(page_title="未來小股神 AI 操盤中心 V32.1", layout="wide")
+st.set_page_config(page_title="AI 操盤中心 V32.1", layout="wide")
 
 DEFAULT_POOL = {
     "7828":"創新服務","1714":"和桐","2409":"友達","2303":"聯電","6271":"同欣電",
@@ -232,7 +232,7 @@ with st.sidebar:
     st.caption("信仰股：7828 創新服務")
 
 if page == "首頁":
-    st.subheader("❤️ 7828 信仰股")
+    st.subheader("❤️ 7828 一路噴")
     faith = analyze("7828", "創新服務")
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("現價", faith.get("現價","-"))
