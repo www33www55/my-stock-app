@@ -2,4 +2,9 @@ streamlit
 pandas
 numpy
 yfinance
-twstock
+plotly
+requests
+lxml
+html5lib
+beautifulsoup4
+
