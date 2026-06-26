@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 import concurrent.futures, time, re
 
-st.set_page_config(page_title="未來小股神 AI 掃描 V32.1 全池修正版", layout="wide")
+st.set_page_config(page_title="AI 掃描 V32.1 全池修正版", layout="wide")
 
 # ========= 基本資料 =========
 FALLBACK_POOL = [
@@ -176,7 +176,7 @@ def market_table():
     return pd.DataFrame(rows)
 
 # ========= UI =========
-st.title("🚀 未來小股神 AI 掃描 V32.1 單檔全池修正版")
+st.title("🚀 AI 掃描 V32.1 單檔全池修正版")
 st.caption("保留 V32.1 介面，只修正：股票池改成上市＋上櫃全市場，不再只有 910 檔。")
 
 with st.sidebar:
@@ -190,7 +190,7 @@ pool = load_twstock_pool(include_emerging, include_etf)
 st.success(f"已載入股票池：{len(pool)} 檔（上市＋上櫃" + ("＋興櫃" if include_emerging else "") + ("＋ETF" if include_etf else "") + "）")
 st.dataframe(pool.head(20), use_container_width=True, hide_index=True)
 
-st.subheader("❤️ 7828 信仰股")
+st.subheader("❤️ 7828 一路噴⬆️")
 faith = fetch_one("7828", "創新服務", "興櫃")
 if faith:
     st.dataframe(pd.DataFrame([faith]), use_container_width=True, hide_index=True)
