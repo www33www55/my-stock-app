@@ -22,15 +22,15 @@ st.set_page_config(page_title="未來小股神 AI 操盤中心", layout="wide", 
 APP_VERSION = "Serious Project v1.0"
 FAITH_CODE = "7828"
 
-DEFAULT_POOL = [
-    ("7828", "創新服務", "TWO"),
-    ("3567", "逸昌", "TWO"),
-    ("6191", "精成科", "TWO"),
-    ("6271", "同欣電", "TW"),
-    ("2303", "聯電", "TW"),
-    ("2330", "台積電", "TW"),
-    ("2409", "友達", "TW"),
-]
+def load_tw_market():
+
+    twse = get_twse_stock()
+    tpex = get_tpex_stock()
+
+    return twse + tpex
+
+
+stock_pool = load_tw_market()
 
 # -----------------------------
 # 資料層：股票池 / 歷史價格 / 大盤
